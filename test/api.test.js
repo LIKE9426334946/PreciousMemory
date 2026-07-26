@@ -12,7 +12,7 @@ async function startTestServer(t) {
     path.join(os.tmpdir(), "precious-memory-"),
   );
   const store = new ConversationStore(
-    path.join(temporaryDirectory, "data", "messages.json"),
+    path.join(temporaryDirectory, "data", "precious-memory.sqlite"),
   );
   await store.init();
 
@@ -29,6 +29,7 @@ async function startTestServer(t) {
 
   t.after(async () => {
     await new Promise((resolve) => server.close(resolve));
+    store.close();
     await fs.rm(temporaryDirectory, { recursive: true, force: true });
   });
 
@@ -146,6 +147,8 @@ test("messages stay isolated inside their conversations", async (t) => {
     studyHistory.body.messages[0].renderedHtml,
     /<strong>Transformer<\/strong>/,
   );
+  assert.equal("createdAt" in studyHistory.body.messages[0], false);
+  assert.equal("updatedAt" in studyHistory.body.messages[0], false);
 
   const dailyHistory = await requestJson(
     `${baseUrl}/api/conversations/${daily.id}/messages?limit=60`,
@@ -213,13 +216,90 @@ test("each conversation has stable message pagination cursors", async (t) => {
   assert.equal(older.body.olderCursor, 2);
 });
 
-test("version 1 single-chat data is reset to the empty version 2 schema", async (t) => {
+test("search finds conversation names and Chinese message fragments", async (t) => {
+  const baseUrl = await startTestServer(t);
+  const study = await createConversation(baseUrl, "Transformer 学习");
+  const daily = await createConversation(baseUrl, "日常聊天");
+
+  const first = await createMessage(
+    baseUrl,
+    study.id,
+    "A",
+    "今天继续研究注意力机制和位置编码。",
+  );
+  await createMessage(
+    baseUrl,
+    study.id,
+    "B",
+    "下一步学习多头注意力的张量形状。",
+  );
+  await createMessage(baseUrl, daily.id, "B", "晚上一起去公园散步。");
+
+  const nameSearch = await requestJson(
+    `${baseUrl}/api/search?q=${encodeURIComponent("Transformer")}`,
+  );
+  assert.equal(nameSearch.response.status, 200);
+  assert.equal(nameSearch.body.results[0].type, "conversation");
+  assert.equal(nameSearch.body.results[0].conversationId, study.id);
+
+  const trigramSearch = await requestJson(
+    `${baseUrl}/api/search?q=${encodeURIComponent("注意力机制")}`,
+  );
+  assert.equal(trigramSearch.response.status, 200);
+  assert.equal(trigramSearch.body.results[0].type, "message");
+  assert.equal(trigramSearch.body.results[0].messageId, first.id);
+
+  const shortSearch = await requestJson(
+    `${baseUrl}/api/search?q=${encodeURIComponent("学习")}`,
+  );
+  assert.equal(shortSearch.response.status, 200);
+  assert.ok(shortSearch.body.results.length >= 2);
+
+  const context = await requestJson(
+    `${baseUrl}/api/conversations/${study.id}/messages?limit=3&around=${first.id}`,
+  );
+  assert.equal(context.response.status, 200);
+  assert.equal(context.body.searchTargetFound, true);
+  assert.ok(
+    context.body.messages.some((message) => message.id === first.id),
+  );
+
+  const edited = await requestJson(
+    `${baseUrl}/api/conversations/${study.id}/messages/${first.id}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ content: "已经改为研究前馈神经网络。" }),
+    },
+  );
+  assert.equal(edited.response.status, 200);
+
+  const oldSearch = await requestJson(
+    `${baseUrl}/api/search?q=${encodeURIComponent("注意力机制")}`,
+  );
+  assert.equal(oldSearch.body.results.length, 0);
+
+  const newSearch = await requestJson(
+    `${baseUrl}/api/search?q=${encodeURIComponent("前馈神经网络")}`,
+  );
+  assert.equal(newSearch.body.results[0].messageId, first.id);
+
+  const stats = await requestJson(`${baseUrl}/api/stats`);
+  assert.equal(stats.body.conversationCount, 2);
+  assert.equal(stats.body.messageCount, 3);
+  assert.ok(stats.body.characterCount > 30);
+});
+
+test("SQLite starts empty and ignores the old JSON file", async (t) => {
   const temporaryDirectory = await fs.mkdtemp(
     path.join(os.tmpdir(), "precious-memory-migration-"),
   );
-  const filePath = path.join(temporaryDirectory, "messages.json");
+  const legacyFilePath = path.join(temporaryDirectory, "messages.json");
+  const databasePath = path.join(
+    temporaryDirectory,
+    "precious-memory.sqlite",
+  );
   await fs.writeFile(
-    filePath,
+    legacyFilePath,
     JSON.stringify({
       version: 1,
       revision: 1,
@@ -231,14 +311,13 @@ test("version 1 single-chat data is reset to the empty version 2 schema", async 
 
   t.after(() => fs.rm(temporaryDirectory, { recursive: true, force: true }));
 
-  const store = new ConversationStore(filePath);
+  const store = new ConversationStore(databasePath);
   await store.init();
   const result = store.listConversations();
 
   assert.equal(result.revision, 0);
   assert.deepEqual(result.conversations, []);
-
-  const persisted = JSON.parse(await fs.readFile(filePath, "utf8"));
-  assert.equal(persisted.version, 2);
-  assert.deepEqual(persisted.conversations, []);
+  assert.equal((await fs.stat(databasePath)).isFile(), true);
+  assert.match(await fs.readFile(legacyFilePath, "utf8"), /旧消息/);
+  store.close();
 });

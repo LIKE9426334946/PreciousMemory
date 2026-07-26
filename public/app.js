@@ -5,8 +5,8 @@ const state = {
   messages: [],
   conversationRevision: null,
   hasMore: false,
+  hasNewer: false,
   olderCursor: null,
-  latestSeq: 0,
   total: 0,
   sender: "A",
   editingMessageId: null,
@@ -17,12 +17,29 @@ const state = {
   refreshInterval: 5000,
   pollTimer: null,
   selectionToken: 0,
+  searchQuery: "",
+  searchResults: [],
+  searchTimer: null,
+  searchRequestToken: 0,
+  searchTargetMessageId: null,
 };
 
 const elements = {
   conversationList: document.querySelector("#conversation-list"),
   conversationCount: document.querySelector("#conversation-count"),
+  conversationHeadingTitle: document.querySelector(
+    "#conversation-heading-title",
+  ),
   conversationEmpty: document.querySelector("#conversation-empty"),
+  conversationEmptyTitle: document.querySelector("#conversation-empty-title"),
+  conversationEmptyDesktop: document.querySelector(
+    "#conversation-empty-desktop",
+  ),
+  conversationEmptyMobile: document.querySelector(
+    "#conversation-empty-mobile",
+  ),
+  searchInput: document.querySelector("#search-input"),
+  searchClear: document.querySelector("#search-clear"),
   newConversation: document.querySelector("#new-conversation"),
   renameConversation: document.querySelector("#rename-conversation"),
   deleteConversation: document.querySelector("#delete-conversation"),
@@ -121,63 +138,10 @@ function scrollToBottom(behavior = "smooth") {
     top: elements.chatScroll.scrollHeight,
     behavior,
   });
-  elements.jumpLatest.classList.add("is-hidden");
-}
 
-function formatConversationTime(isoString) {
-  if (!isoString) {
-    return "";
+  if (!state.searchTargetMessageId && !state.hasNewer) {
+    elements.jumpLatest.classList.add("is-hidden");
   }
-
-  const date = new Date(isoString);
-  const current = new Date();
-  const sameDay = date.toDateString() === current.toDateString();
-
-  if (sameDay) {
-    return new Intl.DateTimeFormat("zh-CN", {
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    }).format(date);
-  }
-
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "numeric",
-    day: "numeric",
-  }).format(date);
-}
-
-function formatDividerTime(isoString) {
-  const date = new Date(isoString);
-  const current = new Date();
-  const sameYear = date.getFullYear() === current.getFullYear();
-
-  return new Intl.DateTimeFormat("zh-CN", {
-    ...(sameYear ? {} : { year: "numeric" }),
-    month: "numeric",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(date);
-}
-
-function formatMessageTime(isoString) {
-  return new Intl.DateTimeFormat("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(new Date(isoString));
-}
-
-function needsTimeDivider(previous, current) {
-  if (!previous) {
-    return true;
-  }
-
-  const previousTime = new Date(previous.createdAt).getTime();
-  const currentTime = new Date(current.createdAt).getTime();
-  return currentTime - previousTime >= 10 * 60 * 1000;
 }
 
 function createConversationItem(conversation) {
@@ -187,7 +151,8 @@ function createConversationItem(conversation) {
   button.dataset.conversationId = conversation.id;
   button.classList.toggle(
     "is-active",
-    conversation.id === state.selectedConversationId,
+    conversation.id === state.selectedConversationId &&
+      !state.searchTargetMessageId,
   );
 
   const avatar = document.createElement("span");
@@ -205,38 +170,102 @@ function createConversationItem(conversation) {
   name.className = "conversation-name";
   name.textContent = conversation.name;
 
-  const time = document.createElement("time");
-  time.className = "conversation-time";
-  time.dateTime = conversation.lastMessageAt || conversation.updatedAt;
-  time.textContent = formatConversationTime(
-    conversation.lastMessageAt || conversation.updatedAt,
-  );
-
   const preview = document.createElement("span");
   preview.className = "conversation-preview";
-  preview.textContent =
-    conversation.lastMessagePreview ||
-    (conversation.messageCount === 0 ? "还没有聊天记录" : "消息记录");
+  preview.textContent = conversation.lastMessagePreview
+    ? `${conversation.messageCount} 条 · ${conversation.lastMessagePreview}`
+    : "还没有聊天记录";
 
-  top.append(name, time);
+  top.append(name);
   copy.append(top, preview);
   button.append(avatar, copy);
   return button;
 }
 
-function renderConversationList() {
-  const fragment = document.createDocumentFragment();
+function createSearchResultItem(result) {
+  const button = document.createElement("button");
+  button.className = "conversation-item";
+  button.type = "button";
+  button.dataset.conversationId = result.conversationId;
 
-  for (const conversation of state.conversations) {
-    fragment.append(createConversationItem(conversation));
+  if (result.messageId) {
+    button.dataset.messageId = result.messageId;
+    button.classList.add("search-result-message");
+  }
+
+  button.classList.toggle(
+    "is-active",
+    result.conversationId === state.selectedConversationId &&
+      result.messageId === state.searchTargetMessageId,
+  );
+
+  const avatar = document.createElement("span");
+  avatar.className = "conversation-avatar";
+  avatar.setAttribute("aria-hidden", "true");
+  avatar.textContent =
+    result.type === "message" ? (result.sender === "A" ? "我" : "TA") : "会";
+
+  const copy = document.createElement("span");
+  copy.className = "conversation-copy";
+
+  const top = document.createElement("span");
+  top.className = "conversation-item-top";
+
+  const name = document.createElement("span");
+  name.className = "conversation-name";
+  name.textContent = result.conversationName;
+
+  const preview = document.createElement("span");
+  preview.className = "conversation-preview";
+
+  const label = document.createElement("span");
+  label.className = "search-result-label";
+  label.textContent =
+    result.type === "message"
+      ? result.sender === "A"
+        ? "我"
+        : "对方"
+      : "对话";
+
+  const snippet = document.createTextNode(result.snippet);
+  preview.append(label, snippet);
+  top.append(name);
+  copy.append(top, preview);
+  button.append(avatar, copy);
+  return button;
+}
+
+function renderConversationDirectory() {
+  const fragment = document.createDocumentFragment();
+  const searching = Boolean(state.searchQuery);
+  const items = searching ? state.searchResults : state.conversations;
+
+  for (const item of items) {
+    fragment.append(
+      searching ? createSearchResultItem(item) : createConversationItem(item),
+    );
   }
 
   elements.conversationList.replaceChildren(fragment);
-  elements.conversationCount.textContent = `${state.conversations.length} 个`;
-  elements.conversationEmpty.classList.toggle(
-    "is-hidden",
-    state.conversations.length > 0,
-  );
+  elements.conversationHeadingTitle.textContent = searching
+    ? "查找结果"
+    : "所有对话";
+  elements.conversationCount.textContent = searching
+    ? `${state.searchResults.length} 条`
+    : `${state.conversations.length} 个`;
+  elements.conversationEmpty.classList.toggle("is-hidden", items.length > 0);
+
+  if (searching) {
+    elements.conversationEmptyTitle.textContent = "没有找到相关内容";
+    elements.conversationEmptyDesktop.textContent = "换一个关键词再试试。";
+    elements.conversationEmptyMobile.textContent = "换一个关键词再试试。";
+  } else {
+    elements.conversationEmptyTitle.textContent = "还没有对话";
+    elements.conversationEmptyDesktop.textContent =
+      "点击“新建对话”开始记录。";
+    elements.conversationEmptyMobile.textContent =
+      "电脑端创建对话后会显示在这里。";
+  }
 }
 
 function setComposerEnabled(enabled) {
@@ -263,19 +292,14 @@ function renderSelectedConversation() {
   setComposerEnabled(hasSelection);
 }
 
-function createTimeDivider(message) {
-  const divider = document.createElement("div");
-  divider.className = "time-divider";
-  const label = document.createElement("span");
-  label.textContent = formatDividerTime(message.createdAt);
-  divider.append(label);
-  return divider;
-}
-
 function createMessageRow(message) {
   const row = document.createElement("article");
   row.className = `message-row ${message.sender === "A" ? "is-mine" : "is-theirs"}`;
   row.dataset.messageId = message.id;
+
+  if (message.id === state.searchTargetMessageId) {
+    row.classList.add("is-search-target");
+  }
 
   const avatar = document.createElement("div");
   avatar.className = "message-avatar";
@@ -292,16 +316,12 @@ function createMessageRow(message) {
   markdown.className = "markdown-body";
   markdown.innerHTML = message.renderedHtml;
   bubble.append(markdown);
+  column.append(bubble);
 
   const meta = document.createElement("div");
   meta.className = "message-meta";
 
-  const time = document.createElement("time");
-  time.dateTime = message.createdAt;
-  time.textContent = formatMessageTime(message.createdAt);
-  meta.append(time);
-
-  if (message.updatedAt !== message.createdAt) {
+  if (message.edited) {
     const edited = document.createElement("span");
     edited.className = "edited-label";
     edited.textContent = "已编辑";
@@ -328,22 +348,19 @@ function createMessageRow(message) {
     meta.append(actions);
   }
 
-  column.append(bubble, meta);
+  if (meta.childNodes.length > 0) {
+    column.append(meta);
+  }
+
   row.append(avatar, column);
   return row;
 }
 
 function renderMessages() {
   const fragment = document.createDocumentFragment();
-  let previous = null;
 
   for (const message of state.messages) {
-    if (needsTimeDivider(previous, message)) {
-      fragment.append(createTimeDivider(message));
-    }
-
     fragment.append(createMessageRow(message));
-    previous = message;
   }
 
   elements.messageList.replaceChildren(fragment);
@@ -355,15 +372,23 @@ function renderMessages() {
     "is-hidden",
     !state.hasMore || state.messages.length === 0,
   );
+
+  if (state.searchTargetMessageId || state.hasNewer) {
+    elements.jumpLatest.textContent = "返回最新消息";
+    elements.jumpLatest.classList.remove("is-hidden");
+  } else {
+    elements.jumpLatest.textContent = "查看最新消息";
+  }
 }
 
 function resetMessageState() {
   state.messages = [];
   state.conversationRevision = null;
   state.hasMore = false;
+  state.hasNewer = false;
   state.olderCursor = null;
-  state.latestSeq = 0;
   state.total = 0;
+  state.searchTargetMessageId = null;
   renderMessages();
 }
 
@@ -372,7 +397,7 @@ function clearSelection() {
   state.selectedConversationId = null;
   resetMessageState();
   exitEditMode();
-  renderConversationList();
+  renderConversationDirectory();
   renderSelectedConversation();
   document.body.classList.remove("mobile-chat-open");
   setConnection("请选择一个对话", "online");
@@ -390,7 +415,7 @@ async function loadInitial() {
     state.refreshInterval = config.refreshInterval || 5000;
     state.conversations = result.conversations;
     state.globalRevision = result.revision;
-    renderConversationList();
+    renderConversationDirectory();
     renderSelectedConversation();
 
     if (desktopMedia.matches && state.conversations.length > 0) {
@@ -414,7 +439,11 @@ async function loadInitial() {
 
 async function selectConversation(
   conversationId,
-  { openMobile = true, force = false } = {},
+  {
+    openMobile = true,
+    force = false,
+    targetMessageId = null,
+  } = {},
 ) {
   const conversation = state.conversations.find(
     (item) => item.id === conversationId,
@@ -431,9 +460,10 @@ async function selectConversation(
   if (
     !force &&
     state.selectedConversationId === conversationId &&
-    state.conversationRevision !== null
+    state.conversationRevision !== null &&
+    state.searchTargetMessageId === targetMessageId
   ) {
-    renderConversationList();
+    renderConversationDirectory();
     return;
   }
 
@@ -441,14 +471,23 @@ async function selectConversation(
   state.selectionToken = token;
   state.selectedConversationId = conversationId;
   resetMessageState();
+  state.searchTargetMessageId = targetMessageId;
   exitEditMode();
-  renderConversationList();
+  renderConversationDirectory();
   renderSelectedConversation();
-  setConnection("正在读取聊天记录…", "loading");
+  setConnection(
+    targetMessageId ? "正在定位查找结果…" : "正在读取聊天记录…",
+    "loading",
+  );
+
+  const parameters = new URLSearchParams({ limit: "60" });
+  if (targetMessageId) {
+    parameters.set("around", targetMessageId);
+  }
 
   try {
     const result = await api(
-      `/api/conversations/${encodeURIComponent(conversationId)}/messages?limit=60`,
+      `/api/conversations/${encodeURIComponent(conversationId)}/messages?${parameters}`,
     );
 
     if (
@@ -461,13 +500,28 @@ async function selectConversation(
     state.messages = result.messages;
     state.conversationRevision = result.conversationRevision;
     state.hasMore = result.hasMore;
+    state.hasNewer = result.hasNewer;
     state.olderCursor = result.olderCursor;
-    state.latestSeq = result.latestSeq;
     state.total = result.total;
+
+    if (targetMessageId && !result.searchTargetFound) {
+      state.searchTargetMessageId = null;
+    }
+
     renderMessages();
-    requestAnimationFrame(() => scrollToBottom("auto"));
+
+    requestAnimationFrame(() => {
+      if (state.searchTargetMessageId) {
+        focusSearchTarget();
+      } else {
+        scrollToBottom("auto");
+      }
+    });
+
     setConnection(
-      `${result.total} 条记录 · 已同步到服务器`,
+      state.searchTargetMessageId
+        ? `${result.total} 条记录 · 已定位到查找结果`
+        : `${result.total} 条记录 · 已同步到服务器`,
       "online",
     );
   } catch (error) {
@@ -475,6 +529,17 @@ async function selectConversation(
       setConnection(error.message, "error");
     }
   }
+}
+
+function focusSearchTarget() {
+  const target = [...elements.messageList.querySelectorAll("[data-message-id]")].find(
+    (row) => row.dataset.messageId === state.searchTargetMessageId,
+  );
+
+  target?.scrollIntoView({
+    block: "center",
+    behavior: "smooth",
+  });
 }
 
 async function loadOlderMessages() {
@@ -529,7 +594,7 @@ async function loadOlderMessages() {
 
 async function refreshSelectedMessages({ preservePosition = true } = {}) {
   const conversationId = state.selectedConversationId;
-  if (!conversationId) {
+  if (!conversationId || state.searchTargetMessageId) {
     return;
   }
 
@@ -554,10 +619,10 @@ async function refreshSelectedMessages({ preservePosition = true } = {}) {
     state.messages = [...olderLoaded, ...result.messages];
   }
 
-  state.latestSeq = result.latestSeq;
   state.conversationRevision = result.conversationRevision;
   state.total = result.total;
   state.hasMore = state.messages.length < result.total;
+  state.hasNewer = false;
   state.olderCursor =
     state.hasMore && state.messages.length > 0 ? state.messages[0].seq : null;
   renderMessages();
@@ -598,6 +663,12 @@ async function refreshApp({ manual = false } = {}) {
     state.conversations = result.conversations;
     state.globalRevision = result.revision;
 
+    if (state.searchQuery) {
+      await performSearch({ keepStatus: true });
+    } else {
+      renderConversationDirectory();
+    }
+
     if (
       state.selectedConversationId &&
       !state.conversations.some(
@@ -615,21 +686,23 @@ async function refreshApp({ manual = false } = {}) {
       return;
     }
 
-    renderConversationList();
     renderSelectedConversation();
-
     const conversation = selectedConversation();
+
     if (
       conversation &&
-      conversation.revision !== state.conversationRevision
+      conversation.revision !== state.conversationRevision &&
+      !state.searchTargetMessageId
     ) {
       await refreshSelectedMessages();
     }
 
     setConnection(
-      state.selectedConversationId
-        ? `${state.total} 条记录 · 刚刚同步`
-        : "对话列表已同步",
+      state.searchTargetMessageId
+        ? `${state.total} 条记录 · 正在查看查找结果`
+        : state.selectedConversationId
+          ? `${state.total} 条记录 · 刚刚同步`
+          : "对话列表已同步",
       "online",
     );
   } catch (error) {
@@ -644,8 +717,80 @@ async function syncConversationList() {
   const result = await api("/api/conversations");
   state.conversations = result.conversations;
   state.globalRevision = result.revision;
-  renderConversationList();
+
+  if (state.searchQuery) {
+    await performSearch({ keepStatus: true });
+  } else {
+    renderConversationDirectory();
+  }
+
   renderSelectedConversation();
+}
+
+function scheduleSearch() {
+  window.clearTimeout(state.searchTimer);
+  state.searchQuery = elements.searchInput.value.trim();
+  elements.searchClear.classList.toggle("is-hidden", !state.searchQuery);
+
+  if (!state.searchQuery) {
+    state.searchResults = [];
+    state.searchRequestToken += 1;
+    renderConversationDirectory();
+    return;
+  }
+
+  state.searchTimer = window.setTimeout(() => performSearch(), 280);
+}
+
+async function performSearch({ keepStatus = false } = {}) {
+  const query = state.searchQuery;
+  if (!query) {
+    state.searchResults = [];
+    renderConversationDirectory();
+    return;
+  }
+
+  const requestToken = state.searchRequestToken + 1;
+  state.searchRequestToken = requestToken;
+  elements.conversationHeadingTitle.textContent = "正在查找…";
+  elements.conversationCount.textContent = "";
+
+  try {
+    const result = await api(
+      `/api/search?q=${encodeURIComponent(query)}&limit=100`,
+    );
+
+    if (
+      requestToken !== state.searchRequestToken ||
+      query !== state.searchQuery
+    ) {
+      return;
+    }
+
+    state.searchResults = result.results;
+    renderConversationDirectory();
+
+    if (!keepStatus) {
+      setConnection(`找到 ${result.results.length} 条结果`, "online");
+    }
+  } catch (error) {
+    if (requestToken === state.searchRequestToken) {
+      state.searchResults = [];
+      renderConversationDirectory();
+      setConnection(error.message, "error");
+    }
+  }
+}
+
+function clearSearch() {
+  window.clearTimeout(state.searchTimer);
+  state.searchRequestToken += 1;
+  state.searchQuery = "";
+  state.searchResults = [];
+  elements.searchInput.value = "";
+  elements.searchClear.classList.add("is-hidden");
+  renderConversationDirectory();
+  elements.searchInput.focus();
 }
 
 function setSender(sender) {
@@ -737,6 +882,7 @@ async function submitMessage() {
       exitEditMode();
       renderMessages();
       setFormStatus("修改已保存");
+      await syncConversationList();
     } else {
       const result = await api(
         `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
@@ -749,18 +895,26 @@ async function submitMessage() {
         },
       );
 
-      state.messages.push(result.message);
-      state.latestSeq = Math.max(state.latestSeq, result.message.seq);
-      state.conversationRevision = result.conversation.revision;
-      state.total += 1;
       elements.input.value = "";
       updateCharacterCount();
-      renderMessages();
-      requestAnimationFrame(() => scrollToBottom("smooth"));
+      await syncConversationList();
+
+      if (state.searchTargetMessageId || state.hasNewer) {
+        await selectConversation(conversationId, {
+          force: true,
+          openMobile: false,
+        });
+      } else {
+        state.messages.push(result.message);
+        state.conversationRevision = result.conversation.revision;
+        state.total += 1;
+        renderMessages();
+        requestAnimationFrame(() => scrollToBottom("smooth"));
+      }
+
       setFormStatus("消息已保存");
     }
 
-    await syncConversationList();
     setConnection(`${state.total} 条记录 · 刚刚保存`, "online");
   } catch (error) {
     setFormStatus(error.message, "error");
@@ -788,16 +942,25 @@ async function deleteMessage(message) {
       `/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(message.id)}`,
       { method: "DELETE" },
     );
-    state.messages = state.messages.filter((item) => item.id !== message.id);
-    state.total = Math.max(0, state.total - 1);
 
     if (state.editingMessageId === message.id) {
       exitEditMode();
     }
 
     await syncConversationList();
-    state.conversationRevision = selectedConversation()?.revision ?? null;
-    renderMessages();
+
+    if (state.searchTargetMessageId === message.id) {
+      await selectConversation(conversationId, {
+        force: true,
+        openMobile: false,
+      });
+    } else {
+      state.messages = state.messages.filter((item) => item.id !== message.id);
+      state.total = Math.max(0, state.total - 1);
+      state.conversationRevision = selectedConversation()?.revision ?? null;
+      renderMessages();
+    }
+
     setFormStatus("消息已删除");
     setConnection(`${state.total} 条记录 · 刚刚保存`, "online");
   } catch (error) {
@@ -931,11 +1094,17 @@ function startPolling() {
 
 elements.conversationList.addEventListener("click", (event) => {
   const item = event.target.closest("[data-conversation-id]");
-  if (item) {
-    selectConversation(item.dataset.conversationId);
+  if (!item) {
+    return;
   }
+
+  selectConversation(item.dataset.conversationId, {
+    targetMessageId: item.dataset.messageId || null,
+  });
 });
 
+elements.searchInput.addEventListener("input", scheduleSearch);
+elements.searchClear.addEventListener("click", clearSearch);
 elements.newConversation.addEventListener("click", () =>
   openConversationDialog("create"),
 );
@@ -1003,7 +1172,16 @@ elements.loadOlder.addEventListener("click", loadOlderMessages);
 elements.refreshButton.addEventListener("click", () =>
   refreshApp({ manual: true }),
 );
-elements.jumpLatest.addEventListener("click", () => scrollToBottom());
+elements.jumpLatest.addEventListener("click", () => {
+  if (state.searchTargetMessageId || state.hasNewer) {
+    selectConversation(state.selectedConversationId, {
+      force: true,
+      openMobile: false,
+    });
+  } else {
+    scrollToBottom();
+  }
+});
 
 elements.chatScroll.addEventListener(
   "scroll",
@@ -1012,7 +1190,11 @@ elements.chatScroll.addEventListener(
       loadOlderMessages();
     }
 
-    if (isNearBottom()) {
+    if (
+      isNearBottom() &&
+      !state.searchTargetMessageId &&
+      !state.hasNewer
+    ) {
       elements.jumpLatest.classList.add("is-hidden");
     }
   },

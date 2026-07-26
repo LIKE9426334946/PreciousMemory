@@ -5,8 +5,10 @@ const sanitizeHtml = require("sanitize-html");
 
 const MAX_MESSAGE_LENGTH = 20_000;
 const MAX_CONVERSATION_NAME_LENGTH = 80;
+const MAX_SEARCH_LENGTH = 100;
 const DEFAULT_PAGE_SIZE = 60;
 const MAX_PAGE_SIZE = 200;
+const DEFAULT_SEARCH_LIMIT = 80;
 
 const markdown = new MarkdownIt({
   html: false,
@@ -146,8 +148,35 @@ function createApp({ store, publicDirectory }) {
       },
       maxMessageLength: MAX_MESSAGE_LENGTH,
       maxConversationNameLength: MAX_CONVERSATION_NAME_LENGTH,
+      maxSearchLength: MAX_SEARCH_LENGTH,
       refreshInterval: 5000,
     });
+  });
+
+  app.get("/api/stats", (request, response) => {
+    response.json(store.getStats());
+  });
+
+  app.get("/api/search", (request, response) => {
+    const query =
+      typeof request.query.q === "string" ? request.query.q.trim() : "";
+
+    if (!query) {
+      return response.json({ query: "", results: [] });
+    }
+
+    if (query.length > MAX_SEARCH_LENGTH) {
+      return response.status(400).json({
+        error: `搜索内容不能超过 ${MAX_SEARCH_LENGTH} 个字符`,
+      });
+    }
+
+    const limit = parsePositiveInteger(
+      request.query.limit,
+      DEFAULT_SEARCH_LIMIT,
+      MAX_PAGE_SIZE,
+    );
+    return response.json(store.search(query, limit));
   });
 
   app.get("/api/conversations", (request, response) => {
@@ -221,10 +250,15 @@ function createApp({ store, publicDirectory }) {
       );
       const before = parsePositiveInteger(request.query.before, null);
       const after = parsePositiveInteger(request.query.after, null);
+      const around =
+        typeof request.query.around === "string" && request.query.around
+          ? request.query.around
+          : null;
       const result = store.listMessages(request.params.conversationId, {
         limit,
         before,
         after,
+        around,
       });
 
       if (!result) {
@@ -355,4 +389,3 @@ module.exports = {
   createApp,
   renderMarkdown,
 };
-

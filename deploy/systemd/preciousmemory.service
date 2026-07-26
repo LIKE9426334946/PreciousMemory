@@ -13,6 +13,7 @@ WorkingDirectory=/opt/PreciousMemory
 Environment=NODE_ENV=production
 Environment=HOST=127.0.0.1
 Environment=PORT=3023
+Environment=DATABASE_FILE=/opt/PreciousMemory/data/precious-memory.sqlite
 
 ExecStart=/usr/bin/node /opt/PreciousMemory/backend/server.js
 
@@ -24,4 +25,3 @@ PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
-

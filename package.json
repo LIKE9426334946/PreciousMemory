@@ -8,12 +8,14 @@
     "start": "node backend/server.js",
     "dev": "NODE_ENV=development node --watch backend/server.js",
     "check": "node --check backend/server.js && node --check backend/app.js && node --check backend/conversation-store.js && node --check public/app.js",
-    "test": "node --test"
+    "test": "node --test",
+    "benchmark": "node scripts/benchmark.js"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
+    "better-sqlite3": "^12.11.1",
     "express": "^5.1.0",
     "markdown-it": "^14.1.0",
     "sanitize-html": "^2.17.0"

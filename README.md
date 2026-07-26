@@ -12,8 +12,12 @@ PreciousMemory 是一个私人使用的双人聊天记录 Web 应用。它不是
 - 用户 A 气泡靠右，用户 B 气泡靠左
 - 支持 Markdown、代码块、表格和长文本
 - 自动加载最新消息，上滑加载更早记录
-- 聊天记录写入服务器的 `data/messages.json`
-- 不使用数据库、账号系统、Docker 或 Kubernetes
+- 使用 SQLite 保存约 500 个对话和 500 万字聊天内容
+- 支持搜索对话名称和所有消息正文
+- 点击搜索结果可直接定位到具体消息
+- 使用 FTS5 三元组索引加速中文片段查找
+- 不存储、不显示对话时间或消息时间
+- 不使用云数据库、账号系统、Docker 或 Kubernetes
 - 提供新增、查询、修改、删除消息的 REST API，便于后期扩展
 
 > 手机端“只读”是前端界面限制，不是权限控制。当前版本没有登录系统，因此能访问服务器端口的人仍可直接调用写入接口。建议暂时仅在可信网络中使用，后续再增加登录和鉴权。
@@ -21,11 +25,14 @@ PreciousMemory 是一个私人使用的双人聊天记录 Web 应用。它不是
 ## 技术结构
 
 ```text
-浏览器 → Nginx :16023 → Node.js :3023 → data/messages.json
+浏览器 → Nginx :16023 → Node.js :3023 → SQLite + FTS5
 ```
 
 - Node.js 20+
 - Express
+- better-sqlite3 12.x
+- SQLite WAL
+- SQLite FTS5 trigram
 - markdown-it
 - sanitize-html
 - Nginx
@@ -40,7 +47,7 @@ PreciousMemory/
 │   ├── conversation-store.js
 │   └── server.js
 ├── data/
-│   └── messages.json       # 第一次启动时自动创建，不提交到 Git
+│   └── precious-memory.sqlite  # 第一次启动时自动创建，不提交到 Git
 ├── deploy/
 │   ├── nginx/
 │   │   └── preciousmemory.conf
@@ -50,6 +57,8 @@ PreciousMemory/
 │   ├── app.js
 │   ├── index.html
 │   └── styles.css
+├── scripts/
+│   └── benchmark.js
 ├── test/
 │   └── api.test.js
 ├── package.json
@@ -73,7 +82,9 @@ http://127.0.0.1:3023
 可以使用环境变量修改：
 
 ```bash
-HOST=127.0.0.1 PORT=3023 npm start
+HOST=127.0.0.1 PORT=3023 \
+DATABASE_FILE=/opt/PreciousMemory/data/precious-memory.sqlite \
+npm start
 ```
 
 ## Ubuntu 服务器完整部署
@@ -126,6 +137,7 @@ WorkingDirectory=/opt/PreciousMemory
 Environment=NODE_ENV=production
 Environment=HOST=127.0.0.1
 Environment=PORT=3023
+Environment=DATABASE_FILE=/opt/PreciousMemory/data/precious-memory.sqlite
 ExecStart=/usr/bin/node /opt/PreciousMemory/backend/server.js
 Restart=always
 ```
@@ -195,23 +207,33 @@ nginx -t
 systemctl reload nginx
 ```
 
-只有在依赖发生变化时才必须重新执行 `npm ci --omit=dev`，但每次更新都执行也不会有问题。聊天记录位于 `/opt/PreciousMemory/data/messages.json`，不会被代码更新覆盖。
+只有在依赖发生变化时才必须重新执行 `npm ci --omit=dev`，但每次更新都执行也不会有问题。聊天记录位于 `/opt/PreciousMemory/data/precious-memory.sqlite`，不会被代码更新覆盖。
 
-### 从旧版单对话结构升级
+### 从 JSON 版本升级
 
-当前版本使用新的多对话 JSON 结构。服务器第一次使用新版代码启动时，如果检测到旧版 `version: 1` 单对话数据，会将 `data/messages.json` 初始化为空的 `version: 2` 多对话结构，不迁移旧聊天记录。
+当前版本不再读取 `data/messages.json`。第一次启动会创建新的空 SQLite 数据库 `data/precious-memory.sqlite`，旧 JSON 聊天记录不会迁移，也不会自动删除。
 
 ## 数据备份
 
-停止服务后复制 JSON 文件即可：
+停止服务后复制 SQLite 主文件：
 
 ```bash
 systemctl stop preciousmemory
-cp /opt/PreciousMemory/data/messages.json /opt/PreciousMemory/data/messages.backup.json
+cp /opt/PreciousMemory/data/precious-memory.sqlite /opt/PreciousMemory/data/precious-memory.backup.sqlite
 systemctl start preciousmemory
 ```
 
-恢复时请先停止服务，再用备份文件替换 `messages.json`。
+停止服务会让 SQLite 正常合并 WAL 内容。恢复时也请先停止服务，再用备份文件替换 `precious-memory.sqlite`。
+
+## 容量验证
+
+项目提供容量基准脚本，会临时创建 500 个对话、5000 条消息和约 500 万字内容，然后验证对话列表及全文查找：
+
+```bash
+npm run benchmark
+```
+
+测试数据库只创建在系统临时目录中，结束后自动删除，不会影响正式聊天数据。
 
 ## API
 
@@ -219,12 +241,15 @@ systemctl start preciousmemory
 | --- | --- | --- |
 | `GET` | `/api/health` | 健康检查 |
 | `GET` | `/api/config` | 获取固定用户和前端配置 |
+| `GET` | `/api/stats` | 获取对话、消息和字符总数 |
+| `GET` | `/api/search?q=关键词` | 查找对话名称和消息正文 |
 | `GET` | `/api/conversations` | 获取所有对话 |
 | `POST` | `/api/conversations` | 新建对话 |
 | `PUT` | `/api/conversations/:conversationId` | 重命名对话 |
 | `DELETE` | `/api/conversations/:conversationId` | 删除对话及其消息 |
 | `GET` | `/api/conversations/:conversationId/messages?limit=60` | 获取该对话的最新消息 |
 | `GET` | `/api/conversations/:conversationId/messages?before=序号` | 向前分页 |
+| `GET` | `/api/conversations/:conversationId/messages?around=消息ID` | 定位搜索结果附近的消息 |
 | `POST` | `/api/conversations/:conversationId/messages` | 在对话中新增消息 |
 | `PUT` | `/api/conversations/:conversationId/messages/:messageId` | 修改消息 |
 | `DELETE` | `/api/conversations/:conversationId/messages/:messageId` | 删除消息 |

@@ -3,3 +3,6 @@ npm-debug.log*
 *.tmp
 .DS_Store
 data/messages.json
+data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal
