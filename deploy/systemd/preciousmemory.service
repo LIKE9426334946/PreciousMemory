@@ -1,0 +1,27 @@
+[Unit]
+Description=PreciousMemory Node.js Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+WorkingDirectory=/opt/PreciousMemory
+
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=3023
+
+ExecStart=/usr/bin/node /opt/PreciousMemory/backend/server.js
+
+Restart=always
+RestartSec=3
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+
