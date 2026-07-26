@@ -10,26 +10,137 @@
   </head>
   <body>
     <div class="app-shell">
-      <aside class="editor-panel desktop-only" aria-label="聊天记录管理">
-        <div class="brand">
-          <div class="brand-mark" aria-hidden="true">P</div>
-          <div>
-            <p class="eyebrow">PRIVATE ARCHIVE</p>
-            <h1>PreciousMemory</h1>
+      <aside class="conversation-panel" aria-label="对话列表">
+        <header class="brand-header">
+          <div class="brand">
+            <div class="brand-mark" aria-hidden="true">P</div>
+            <div>
+              <p class="eyebrow">PRIVATE ARCHIVE</p>
+              <h1>PreciousMemory</h1>
+            </div>
           </div>
+
+          <button
+            class="new-conversation desktop-only"
+            id="new-conversation"
+            type="button"
+          >
+            <span aria-hidden="true">＋</span>
+            新建对话
+          </button>
+        </header>
+
+        <div class="conversation-heading">
+          <div>
+            <p class="eyebrow">CONVERSATIONS</p>
+            <h2>所有对话</h2>
+          </div>
+          <span id="conversation-count">0 个</span>
         </div>
 
-        <section class="composer-card">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">NEW MESSAGE</p>
-              <h2 id="composer-title">记录一段对话</h2>
+        <div class="conversation-list" id="conversation-list"></div>
+
+        <div class="conversation-empty is-hidden" id="conversation-empty">
+          <div aria-hidden="true">♡</div>
+          <h3>还没有对话</h3>
+          <p class="desktop-only">点击“新建对话”开始记录。</p>
+          <p class="mobile-only">电脑端创建对话后会显示在这里。</p>
+        </div>
+
+        <footer class="panel-footer">
+          <span class="online-dot" aria-hidden="true"></span>
+          <span class="desktop-only">数据保存在这台服务器</span>
+          <span class="mobile-only">选择一个对话查看记录</span>
+        </footer>
+      </aside>
+
+      <main class="chat-panel">
+        <header class="chat-header">
+          <button
+            class="back-button mobile-only"
+            id="back-to-conversations"
+            type="button"
+            aria-label="返回对话列表"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m15 18-6-6 6-6" />
+            </svg>
+          </button>
+
+          <div class="chat-person">
+            <div class="couple-avatar" aria-hidden="true">
+              <span>我</span>
+              <span>TA</span>
             </div>
-            <span class="draft-dot" aria-hidden="true"></span>
+            <div class="chat-title">
+              <h2 id="current-conversation-name">请选择一个对话</h2>
+              <p>
+                <span class="status-indicator" id="connection-dot"></span>
+                <span id="connection-status">正在连接服务器…</span>
+              </p>
+            </div>
           </div>
 
-          <fieldset class="sender-fieldset" id="sender-fieldset">
-            <legend>选择发送者</legend>
+          <div class="header-actions">
+            <button
+              class="header-button desktop-only"
+              id="rename-conversation"
+              type="button"
+              disabled
+            >
+              重命名
+            </button>
+            <button
+              class="header-button danger desktop-only"
+              id="delete-conversation"
+              type="button"
+              disabled
+            >
+              删除对话
+            </button>
+            <button
+              class="icon-button"
+              id="refresh-button"
+              type="button"
+              aria-label="刷新聊天记录"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7" />
+              </svg>
+            </button>
+          </div>
+        </header>
+
+        <div class="no-selection" id="no-selection">
+          <div class="no-selection-icon" aria-hidden="true">P</div>
+          <h2>选择一段珍贵回忆</h2>
+          <p class="desktop-only">从左侧选择对话，或者创建一个新的对话。</p>
+          <p class="mobile-only">返回目录选择想查看的对话。</p>
+        </div>
+
+        <div class="chat-scroll is-hidden" id="chat-scroll">
+          <div class="history-loader">
+            <button class="history-button is-hidden" id="load-older" type="button">
+              加载更早的记录
+            </button>
+          </div>
+
+          <div class="message-empty is-hidden" id="message-empty">
+            <div aria-hidden="true">♡</div>
+            <h3>这个对话还没有消息</h3>
+            <p class="desktop-only">在下方写下第一条记录吧。</p>
+            <p class="mobile-only">电脑端添加后会自动出现在这里。</p>
+          </div>
+
+          <div class="message-list" id="message-list" aria-live="polite"></div>
+
+          <button class="jump-latest is-hidden" id="jump-latest" type="button">
+            查看最新消息
+          </button>
+        </div>
+
+        <section class="composer desktop-only is-disabled" id="composer">
+          <div class="composer-topline">
             <div class="sender-switch" role="radiogroup" aria-label="选择发送者">
               <button
                 class="sender-option is-active"
@@ -52,29 +163,31 @@
                 用户 B
               </button>
             </div>
-          </fieldset>
 
-          <label class="message-label" for="message-input">
-            消息内容
-            <span>支持 Markdown</span>
-          </label>
-          <textarea
-            id="message-input"
-            maxlength="20000"
-            rows="10"
-            placeholder="写下想保存的聊天内容……&#10;&#10;例如：&#10;今天学习了 **Transformer** 架构。"
-          ></textarea>
-
-          <div class="composer-meta">
-            <span>Ctrl + Enter 发送</span>
-            <span id="character-count">0 / 20000</span>
+            <div class="composer-mode">
+              <span id="composer-mode-label">记录新消息</span>
+              <button class="text-button is-hidden" id="cancel-edit" type="button">
+                取消修改
+              </button>
+            </div>
           </div>
 
-          <div class="composer-actions">
-            <button class="button button-ghost is-hidden" id="cancel-edit" type="button">
-              取消修改
-            </button>
-            <button class="button button-primary" id="submit-message" type="button">
+          <div class="composer-input-row">
+            <div class="textarea-wrap">
+              <textarea
+                id="message-input"
+                maxlength="20000"
+                rows="4"
+                disabled
+                placeholder="输入聊天内容，支持 Markdown……"
+              ></textarea>
+              <div class="composer-meta">
+                <span>Ctrl + Enter 发送</span>
+                <span id="character-count">0 / 20000</span>
+              </div>
+            </div>
+
+            <button class="send-button" id="submit-message" type="button" disabled>
               保存消息
             </button>
           </div>
@@ -82,65 +195,42 @@
           <p class="form-status" id="form-status" role="status" aria-live="polite"></p>
         </section>
 
-        <div class="markdown-note">
-          <p>Markdown 小提示</p>
-          <code>**粗体**</code>
-          <code>`行内代码`</code>
-          <code>- 列表</code>
-          <code>```代码块```</code>
-        </div>
-      </aside>
-
-      <main class="chat-panel">
-        <header class="chat-header">
-          <div class="chat-person">
-            <div class="couple-avatar" aria-hidden="true">
-              <span>我</span>
-              <span>TA</span>
-            </div>
-            <div>
-              <h2>我们的聊天记录</h2>
-              <p>
-                <span class="status-indicator" id="connection-dot"></span>
-                <span id="connection-status">正在连接服务器…</span>
-              </p>
-            </div>
-          </div>
-
-          <button class="icon-button" id="refresh-button" type="button" aria-label="刷新聊天记录">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7" />
-            </svg>
-          </button>
-        </header>
-
-        <div class="chat-scroll" id="chat-scroll">
-          <div class="history-loader">
-            <button class="history-button is-hidden" id="load-older" type="button">
-              加载更早的记录
-            </button>
-          </div>
-
-          <div class="empty-state is-hidden" id="empty-state">
-            <div class="empty-icon" aria-hidden="true">♡</div>
-            <h3>还没有聊天记录</h3>
-            <p class="desktop-only">从左侧写下第一条消息吧。</p>
-            <p class="mobile-only">新的聊天记录会自动出现在这里。</p>
-          </div>
-
-          <div class="message-list" id="message-list" aria-live="polite"></div>
-
-          <button class="jump-latest is-hidden" id="jump-latest" type="button">
-            查看最新消息
-          </button>
-        </div>
-
         <footer class="mobile-footer mobile-only">
-          <span class="lock-icon" aria-hidden="true">●</span>
+          <span class="online-dot" aria-hidden="true"></span>
           手机只读模式 · 每 5 秒自动更新
         </footer>
       </main>
     </div>
+
+    <dialog class="conversation-dialog" id="conversation-dialog">
+      <form id="conversation-form">
+        <div class="dialog-mark" aria-hidden="true">P</div>
+        <p class="eyebrow" id="dialog-eyebrow">NEW CONVERSATION</p>
+        <h2 id="dialog-title">新建对话</h2>
+        <p id="dialog-description">给这段聊天记录起一个容易辨认的名字。</p>
+
+        <label for="conversation-name">对话名称</label>
+        <input
+          id="conversation-name"
+          name="conversationName"
+          type="text"
+          maxlength="80"
+          autocomplete="off"
+          placeholder="例如：学习记录"
+          required
+        />
+
+        <p class="dialog-error" id="dialog-error" role="alert"></p>
+
+        <div class="dialog-actions">
+          <button class="dialog-cancel" id="dialog-cancel" type="button">
+            取消
+          </button>
+          <button class="dialog-confirm" id="dialog-confirm" type="submit">
+            创建对话
+          </button>
+        </div>
+      </form>
+    </dialog>
   </body>
 </html>
-

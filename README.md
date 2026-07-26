@@ -1,12 +1,14 @@
 # PreciousMemory
 
-PreciousMemory 是一个私人使用的双人聊天记录 Web 应用。它不是实时聊天软件：电脑端用于手动记录、修改和删除消息，手机端只展示历史记录。
+PreciousMemory 是一个私人使用的双人聊天记录 Web 应用。它不是实时聊天软件：电脑端用于创建多个对话并手动维护消息，手机端用于从对话目录进入不同聊天并查看历史记录。
 
-## 第一版功能
+## 当前功能
 
 - 固定两个角色：用户 A「我」、用户 B「对方」
-- 电脑宽屏显示消息编辑面板
-- 手机端自动切换为只读界面
+- 创建多个互相独立的对话
+- 新建、命名、重命名和删除对话
+- 电脑宽屏显示对话目录和消息编辑区
+- 手机端显示对话目录，进入对话后为只读模式
 - 用户 A 气泡靠右，用户 B 气泡靠左
 - 支持 Markdown、代码块、表格和长文本
 - 自动加载最新消息，上滑加载更早记录
@@ -35,7 +37,7 @@ PreciousMemory 是一个私人使用的双人聊天记录 Web 应用。它不是
 PreciousMemory/
 ├── backend/
 │   ├── app.js
-│   ├── message-store.js
+│   ├── conversation-store.js
 │   └── server.js
 ├── data/
 │   └── messages.json       # 第一次启动时自动创建，不提交到 Git
@@ -180,7 +182,7 @@ curl http://127.0.0.1:16023/api/health
 http://服务器公网IP:16023
 ```
 
-电脑宽屏会显示聊天记录管理面板；手机窄屏只显示聊天内容，并每 5 秒自动读取最新记录。
+电脑宽屏会显示对话目录、对话管理按钮和消息编辑区；手机窄屏先显示对话目录，进入对话后只读查看，并每 5 秒自动读取最新记录。
 
 ## 更新项目
 
@@ -194,6 +196,10 @@ systemctl reload nginx
 ```
 
 只有在依赖发生变化时才必须重新执行 `npm ci --omit=dev`，但每次更新都执行也不会有问题。聊天记录位于 `/opt/PreciousMemory/data/messages.json`，不会被代码更新覆盖。
+
+### 从旧版单对话结构升级
+
+当前版本使用新的多对话 JSON 结构。服务器第一次使用新版代码启动时，如果检测到旧版 `version: 1` 单对话数据，会将 `data/messages.json` 初始化为空的 `version: 2` 多对话结构，不迁移旧聊天记录。
 
 ## 数据备份
 
@@ -213,18 +219,28 @@ systemctl start preciousmemory
 | --- | --- | --- |
 | `GET` | `/api/health` | 健康检查 |
 | `GET` | `/api/config` | 获取固定用户和前端配置 |
-| `GET` | `/api/messages?limit=60` | 获取最新历史记录 |
-| `GET` | `/api/messages?before=序号` | 向前分页 |
-| `GET` | `/api/messages?after=序号` | 查询新增消息 |
-| `POST` | `/api/messages` | 新增消息 |
-| `PUT` | `/api/messages/:id` | 修改消息内容 |
-| `DELETE` | `/api/messages/:id` | 删除消息 |
+| `GET` | `/api/conversations` | 获取所有对话 |
+| `POST` | `/api/conversations` | 新建对话 |
+| `PUT` | `/api/conversations/:conversationId` | 重命名对话 |
+| `DELETE` | `/api/conversations/:conversationId` | 删除对话及其消息 |
+| `GET` | `/api/conversations/:conversationId/messages?limit=60` | 获取该对话的最新消息 |
+| `GET` | `/api/conversations/:conversationId/messages?before=序号` | 向前分页 |
+| `POST` | `/api/conversations/:conversationId/messages` | 在对话中新增消息 |
+| `PUT` | `/api/conversations/:conversationId/messages/:messageId` | 修改消息 |
+| `DELETE` | `/api/conversations/:conversationId/messages/:messageId` | 删除消息 |
 
-新增消息示例：
+新建对话示例：
 
 ```bash
-curl -X POST http://127.0.0.1:3023/api/messages \
+curl -X POST http://127.0.0.1:3023/api/conversations \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Transformer 学习"}'
+```
+
+创建成功后，使用返回的对话 ID 新增消息：
+
+```bash
+curl -X POST http://127.0.0.1:3023/api/conversations/对话ID/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"A","content":"今天学习了 **Transformer** 架构"}'
 ```
-

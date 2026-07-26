@@ -4,6 +4,7 @@ const MarkdownIt = require("markdown-it");
 const sanitizeHtml = require("sanitize-html");
 
 const MAX_MESSAGE_LENGTH = 20_000;
+const MAX_CONVERSATION_NAME_LENGTH = 80;
 const DEFAULT_PAGE_SIZE = 60;
 const MAX_PAGE_SIZE = 200;
 
@@ -71,6 +72,22 @@ function parsePositiveInteger(value, fallback, maximum = Number.MAX_SAFE_INTEGER
   return Math.min(parsed, maximum);
 }
 
+function validateConversationName(body) {
+  const name = typeof body?.name === "string" ? body.name.trim() : "";
+
+  if (!name) {
+    return { error: "对话名称不能为空" };
+  }
+
+  if (name.length > MAX_CONVERSATION_NAME_LENGTH) {
+    return {
+      error: `对话名称不能超过 ${MAX_CONVERSATION_NAME_LENGTH} 个字符`,
+    };
+  }
+
+  return { name };
+}
+
 function validateMessageBody(body, { requireSender = true } = {}) {
   const sender = body?.sender;
   const content = typeof body?.content === "string" ? body.content.trim() : "";
@@ -128,78 +145,187 @@ function createApp({ store, publicDirectory }) {
         B: "对方",
       },
       maxMessageLength: MAX_MESSAGE_LENGTH,
+      maxConversationNameLength: MAX_CONVERSATION_NAME_LENGTH,
       refreshInterval: 5000,
     });
   });
 
-  app.get("/api/messages", (request, response) => {
-    const limit = parsePositiveInteger(
-      request.query.limit,
-      DEFAULT_PAGE_SIZE,
-      MAX_PAGE_SIZE,
-    );
-    const before = parsePositiveInteger(request.query.before, null);
-    const after = parsePositiveInteger(request.query.after, null);
-    const result = store.list({ limit, before, after });
-
-    response.json({
-      ...result,
-      messages: result.messages.map(presentMessage),
-    });
+  app.get("/api/conversations", (request, response) => {
+    response.json(store.listConversations());
   });
 
-  app.post("/api/messages", async (request, response, next) => {
+  app.post("/api/conversations", async (request, response, next) => {
     try {
-      const validation = validateMessageBody(request.body);
+      const validation = validateConversationName(request.body);
 
       if (validation.error) {
         return response.status(400).json({ error: validation.error });
       }
 
-      const message = await store.add(validation);
-      return response.status(201).json({ message: presentMessage(message) });
+      const conversation = await store.createConversation(validation.name);
+      return response.status(201).json({ conversation });
     } catch (error) {
       return next(error);
     }
   });
 
-  app.put("/api/messages/:id", async (request, response, next) => {
+  app.put("/api/conversations/:conversationId", async (request, response, next) => {
     try {
-      const validation = validateMessageBody(request.body, {
-        requireSender: false,
-      });
+      const validation = validateConversationName(request.body);
 
       if (validation.error) {
         return response.status(400).json({ error: validation.error });
       }
 
-      const message = await store.update(request.params.id, {
-        content: validation.content,
+      const conversation = await store.renameConversation(
+        request.params.conversationId,
+        validation.name,
+      );
+
+      if (!conversation) {
+        return response.status(404).json({ error: "没有找到这个对话" });
+      }
+
+      return response.json({ conversation });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.delete(
+    "/api/conversations/:conversationId",
+    async (request, response, next) => {
+      try {
+        const removed = await store.removeConversation(
+          request.params.conversationId,
+        );
+
+        if (!removed) {
+          return response.status(404).json({ error: "没有找到这个对话" });
+        }
+
+        return response.status(204).end();
+      } catch (error) {
+        return next(error);
+      }
+    },
+  );
+
+  app.get(
+    "/api/conversations/:conversationId/messages",
+    (request, response) => {
+      const limit = parsePositiveInteger(
+        request.query.limit,
+        DEFAULT_PAGE_SIZE,
+        MAX_PAGE_SIZE,
+      );
+      const before = parsePositiveInteger(request.query.before, null);
+      const after = parsePositiveInteger(request.query.after, null);
+      const result = store.listMessages(request.params.conversationId, {
+        limit,
+        before,
+        after,
       });
 
-      if (!message) {
-        return response.status(404).json({ error: "没有找到这条消息" });
+      if (!result) {
+        return response.status(404).json({ error: "没有找到这个对话" });
       }
 
-      return response.json({ message: presentMessage(message) });
-    } catch (error) {
-      return next(error);
-    }
-  });
+      return response.json({
+        ...result,
+        messages: result.messages.map(presentMessage),
+      });
+    },
+  );
 
-  app.delete("/api/messages/:id", async (request, response, next) => {
-    try {
-      const removed = await store.remove(request.params.id);
+  app.post(
+    "/api/conversations/:conversationId/messages",
+    async (request, response, next) => {
+      try {
+        const validation = validateMessageBody(request.body);
 
-      if (!removed) {
-        return response.status(404).json({ error: "没有找到这条消息" });
+        if (validation.error) {
+          return response.status(400).json({ error: validation.error });
+        }
+
+        const result = await store.addMessage(
+          request.params.conversationId,
+          validation,
+        );
+
+        if (!result) {
+          return response.status(404).json({ error: "没有找到这个对话" });
+        }
+
+        return response.status(201).json({
+          conversation: result.conversation,
+          message: presentMessage(result.message),
+        });
+      } catch (error) {
+        return next(error);
       }
+    },
+  );
 
-      return response.status(204).end();
-    } catch (error) {
-      return next(error);
-    }
-  });
+  app.put(
+    "/api/conversations/:conversationId/messages/:messageId",
+    async (request, response, next) => {
+      try {
+        const validation = validateMessageBody(request.body, {
+          requireSender: false,
+        });
+
+        if (validation.error) {
+          return response.status(400).json({ error: validation.error });
+        }
+
+        const result = await store.updateMessage(
+          request.params.conversationId,
+          request.params.messageId,
+          validation.content,
+        );
+
+        if (!result.conversationFound) {
+          return response.status(404).json({ error: "没有找到这个对话" });
+        }
+
+        if (!result.message) {
+          return response.status(404).json({ error: "没有找到这条消息" });
+        }
+
+        return response.json({
+          conversation: result.conversation,
+          message: presentMessage(result.message),
+        });
+      } catch (error) {
+        return next(error);
+      }
+    },
+  );
+
+  app.delete(
+    "/api/conversations/:conversationId/messages/:messageId",
+    async (request, response, next) => {
+      try {
+        const result = await store.removeMessage(
+          request.params.conversationId,
+          request.params.messageId,
+        );
+
+        if (!result.conversationFound) {
+          return response.status(404).json({ error: "没有找到这个对话" });
+        }
+
+        if (!result.removed) {
+          return response.status(404).json({ error: "没有找到这条消息" });
+        }
+
+        return response.status(204).end();
+      } catch (error) {
+        return next(error);
+      }
+    },
+  );
 
   app.use(
     express.static(publicDir, {
