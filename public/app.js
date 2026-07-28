@@ -53,13 +53,9 @@ const elements = {
   messageList: document.querySelector("#message-list"),
   jumpLatest: document.querySelector("#jump-latest"),
   composer: document.querySelector("#composer"),
-  aiModelLabel: document.querySelector("#ai-model-label"),
-  composerModeLabel: document.querySelector("#composer-mode-label"),
   input: document.querySelector("#message-input"),
-  characterCount: document.querySelector("#character-count"),
   submit: document.querySelector("#submit-message"),
   stop: document.querySelector("#stop-generation"),
-  formStatus: document.querySelector("#form-status"),
   dialog: document.querySelector("#conversation-dialog"),
   dialogForm: document.querySelector("#conversation-form"),
   dialogEyebrow: document.querySelector("#dialog-eyebrow"),
@@ -187,11 +183,6 @@ function setConnection(message, type = "online") {
   elements.connectionDot.classList.toggle("is-online", type === "online");
   elements.connectionDot.classList.toggle("is-error", type === "error");
   elements.connectionDot.classList.toggle("is-busy", type === "busy");
-}
-
-function setFormStatus(message, type = "success") {
-  elements.formStatus.textContent = message;
-  elements.formStatus.classList.toggle("is-error", type === "error");
 }
 
 function isNearBottom() {
@@ -357,12 +348,6 @@ function updateComposerState() {
   elements.stop.classList.toggle("is-hidden", !state.generating);
   elements.renameConversation.disabled = !selected || state.generating;
   elements.deleteConversation.disabled = !selected || state.generating;
-
-  if (state.generating) {
-    elements.composerModeLabel.textContent = "AI 正在生成回复";
-  } else {
-    elements.composerModeLabel.textContent = "Markdown 已启用";
-  }
 }
 
 function renderSelectedConversation() {
@@ -462,12 +447,6 @@ function resetMessageState() {
   renderMessages();
 }
 
-function updateCharacterCount() {
-  const maximum = state.config?.maxMessageLength || 20_000;
-  elements.characterCount.textContent = `${elements.input.value.length} / ${maximum}`;
-  updateComposerState();
-}
-
 async function loadInitial() {
   setConnection("正在读取对话列表…", "busy");
 
@@ -482,20 +461,10 @@ async function loadInitial() {
     state.conversations = result.conversations;
     state.globalRevision = result.revision;
     elements.input.maxLength = config.maxMessageLength || 20_000;
-    elements.aiModelLabel.textContent = config.ai.configured
-      ? `已连接 · ${config.ai.model}`
-      : "AI 接口尚未配置";
-
-    if (!config.ai.configured) {
-      setFormStatus(
-        "请先在服务器 .env 中配置 OpenAI 兼容接口，再重启服务。",
-        "error",
-      );
-    }
 
     renderConversationDirectory();
     renderSelectedConversation();
-    updateCharacterCount();
+    updateComposerState();
 
     if (desktopMedia.matches && state.conversations.length > 0) {
       await selectConversation(state.conversations[0].id, {
@@ -508,6 +477,10 @@ async function loadInitial() {
           : "新建一个独立对话",
         "online",
       );
+    }
+
+    if (!config.ai.configured) {
+      setConnection("AI 接口尚未配置，请检查服务器 .env", "error");
     }
 
     startPolling();
@@ -597,7 +570,11 @@ async function selectConversation(
         scrollToBottom("auto");
       }
     });
-    setConnection(`${result.total} 条消息 · 上下文独立`, "online");
+    if (state.config?.ai?.configured) {
+      setConnection(`${result.total} 条消息 · 上下文独立`, "online");
+    } else {
+      setConnection("AI 接口尚未配置，请检查服务器 .env", "error");
+    }
   } catch (error) {
     if (token === state.selectionToken) {
       setConnection(error.message, "error");
@@ -879,7 +856,6 @@ async function submitMessage() {
   state.generationController = new AbortController();
   state.streamingMessageId = null;
   updateComposerState();
-  setFormStatus("");
   setConnection("AI 正在回复…", "busy");
 
   try {
@@ -910,7 +886,7 @@ async function submitMessage() {
         state.conversationRevision = payload.conversation.revision;
         state.total = Math.max(state.total + 1, payload.conversation.messageCount);
         elements.input.value = "";
-        updateCharacterCount();
+        updateComposerState();
         renderConversationDirectory();
         renderMessages();
         requestAnimationFrame(() => scrollToBottom("smooth"));
@@ -952,11 +928,9 @@ async function submitMessage() {
     renderMessages();
 
     if (stopped) {
-      setFormStatus("已停止生成，已收到的部分会保存在服务器。");
       setConnection("AI 回复已停止", "online");
     } else {
-      setFormStatus(error.message, "error");
-      setConnection("AI 回复失败", "error");
+      setConnection(error.message || "AI 回复失败", "error");
     }
 
     window.setTimeout(() => {
@@ -1033,7 +1007,6 @@ async function saveConversation(event) {
         force: true,
       });
       elements.input.focus();
-      setFormStatus("新对话已创建，这是一个全新的上下文。");
     } else {
       const conversationId = state.selectedConversationId;
       await api(`/api/conversations/${encodeURIComponent(conversationId)}`, {
@@ -1136,7 +1109,7 @@ elements.dialog.addEventListener("click", (event) => {
   }
 });
 
-elements.input.addEventListener("input", updateCharacterCount);
+elements.input.addEventListener("input", updateComposerState);
 elements.input.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
