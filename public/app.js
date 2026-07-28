@@ -1,68 +1,64 @@
 const state = {
+  config: null,
   conversations: [],
   globalRevision: null,
   selectedConversationId: null,
-  messages: [],
   conversationRevision: null,
+  messages: [],
+  total: 0,
   hasMore: false,
   hasNewer: false,
   olderCursor: null,
-  total: 0,
-  sender: "A",
-  editingMessageId: null,
-  dialogMode: "create",
-  loadingOlder: false,
-  refreshing: false,
-  submitting: false,
-  refreshInterval: 5000,
-  pollTimer: null,
-  selectionToken: 0,
   searchQuery: "",
   searchResults: [],
   searchTimer: null,
   searchRequestToken: 0,
   searchTargetMessageId: null,
+  selectionToken: 0,
+  loadingOlder: false,
+  refreshing: false,
+  generating: false,
+  generationController: null,
+  streamingMessageId: null,
+  pollTimer: null,
+  refreshInterval: 5000,
+  dialogMode: "create",
 };
 
 const elements = {
   conversationList: document.querySelector("#conversation-list"),
-  conversationCount: document.querySelector("#conversation-count"),
   conversationHeadingTitle: document.querySelector(
     "#conversation-heading-title",
   ),
+  conversationCount: document.querySelector("#conversation-count"),
   conversationEmpty: document.querySelector("#conversation-empty"),
   conversationEmptyTitle: document.querySelector("#conversation-empty-title"),
-  conversationEmptyDesktop: document.querySelector(
-    "#conversation-empty-desktop",
-  ),
-  conversationEmptyMobile: document.querySelector(
-    "#conversation-empty-mobile",
-  ),
+  conversationEmptyCopy: document.querySelector("#conversation-empty-copy"),
+  newConversation: document.querySelector("#new-conversation"),
   searchInput: document.querySelector("#search-input"),
   searchClear: document.querySelector("#search-clear"),
-  newConversation: document.querySelector("#new-conversation"),
-  renameConversation: document.querySelector("#rename-conversation"),
-  deleteConversation: document.querySelector("#delete-conversation"),
   currentConversationName: document.querySelector(
     "#current-conversation-name",
   ),
+  connectionStatus: document.querySelector("#connection-status"),
+  connectionDot: document.querySelector("#connection-dot"),
+  renameConversation: document.querySelector("#rename-conversation"),
+  deleteConversation: document.querySelector("#delete-conversation"),
+  refreshButton: document.querySelector("#refresh-button"),
   backToConversations: document.querySelector("#back-to-conversations"),
   noSelection: document.querySelector("#no-selection"),
   chatScroll: document.querySelector("#chat-scroll"),
-  messageList: document.querySelector("#message-list"),
-  messageEmpty: document.querySelector("#message-empty"),
   loadOlder: document.querySelector("#load-older"),
+  messageEmpty: document.querySelector("#message-empty"),
+  messageList: document.querySelector("#message-list"),
   jumpLatest: document.querySelector("#jump-latest"),
-  refreshButton: document.querySelector("#refresh-button"),
-  connectionDot: document.querySelector("#connection-dot"),
-  connectionStatus: document.querySelector("#connection-status"),
   composer: document.querySelector("#composer"),
-  senderOptions: [...document.querySelectorAll(".sender-option")],
+  aiModelLabel: document.querySelector("#ai-model-label"),
+  composerModeLabel: document.querySelector("#composer-mode-label"),
   input: document.querySelector("#message-input"),
   characterCount: document.querySelector("#character-count"),
   submit: document.querySelector("#submit-message"),
-  cancelEdit: document.querySelector("#cancel-edit"),
-  composerModeLabel: document.querySelector("#composer-mode-label"),
+  stop: document.querySelector("#stop-generation"),
   formStatus: document.querySelector("#form-status"),
   dialog: document.querySelector("#conversation-dialog"),
   dialogForm: document.querySelector("#conversation-form"),
@@ -93,7 +89,7 @@ async function api(path, options = {}) {
       const body = await response.json();
       message = body.error || message;
     } catch {
-      // Keep the fallback message when the response is not JSON.
+      // Keep the fallback when the response is not JSON.
     }
 
     throw new Error(message);
@@ -106,6 +102,78 @@ async function api(path, options = {}) {
   return response.json();
 }
 
+async function responseError(response) {
+  try {
+    const body = await response.json();
+    return body.error || `请求失败（HTTP ${response.status}）`;
+  } catch {
+    return `请求失败（HTTP ${response.status}）`;
+  }
+}
+
+async function consumeEventStream(response, onEvent) {
+  if (!response.body) {
+    throw new Error("浏览器没有收到流式响应");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const consumeBlock = (block) => {
+    let eventName = "message";
+    const dataLines = [];
+
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith("event:")) {
+        eventName = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+
+    if (dataLines.length === 0) {
+      return;
+    }
+
+    const raw = dataLines.join("\n");
+    let payload = {};
+
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      throw new Error("服务器返回了无法解析的流式数据");
+    }
+
+    onEvent(eventName, payload);
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() || "";
+
+      for (const block of blocks) {
+        if (block.trim()) {
+          consumeBlock(block);
+        }
+      }
+
+      if (done) {
+        if (buffer.trim()) {
+          consumeBlock(buffer);
+        }
+        break;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 function selectedConversation() {
   return (
     state.conversations.find(
@@ -114,10 +182,11 @@ function selectedConversation() {
   );
 }
 
-function setConnection(status, type = "online") {
-  elements.connectionStatus.textContent = status;
+function setConnection(message, type = "online") {
+  elements.connectionStatus.textContent = message;
   elements.connectionDot.classList.toggle("is-online", type === "online");
   elements.connectionDot.classList.toggle("is-error", type === "error");
+  elements.connectionDot.classList.toggle("is-busy", type === "busy");
 }
 
 function setFormStatus(message, type = "success") {
@@ -130,7 +199,7 @@ function isNearBottom() {
     elements.chatScroll.scrollHeight -
     elements.chatScroll.scrollTop -
     elements.chatScroll.clientHeight;
-  return distance < 120;
+  return distance < 140;
 }
 
 function scrollToBottom(behavior = "smooth") {
@@ -142,6 +211,23 @@ function scrollToBottom(behavior = "smooth") {
   if (!state.searchTargetMessageId && !state.hasNewer) {
     elements.jumpLatest.classList.add("is-hidden");
   }
+}
+
+function upsertConversation(conversation) {
+  const index = state.conversations.findIndex(
+    (item) => item.id === conversation.id,
+  );
+
+  if (index >= 0) {
+    state.conversations[index] = conversation;
+  } else {
+    state.conversations.push(conversation);
+  }
+
+  state.conversations.sort(
+    (left, right) =>
+      right.sortOrder - left.sortOrder || left.name.localeCompare(right.name),
+  );
 }
 
 function createConversationItem(conversation) {
@@ -174,7 +260,7 @@ function createConversationItem(conversation) {
   preview.className = "conversation-preview";
   preview.textContent = conversation.lastMessagePreview
     ? `${conversation.messageCount} 条 · ${conversation.lastMessagePreview}`
-    : "还没有聊天记录";
+    : "新的独立上下文";
 
   top.append(name);
   copy.append(top, preview);
@@ -203,32 +289,26 @@ function createSearchResultItem(result) {
   avatar.className = "conversation-avatar";
   avatar.setAttribute("aria-hidden", "true");
   avatar.textContent =
-    result.type === "message" ? (result.sender === "A" ? "我" : "TA") : "会";
+    result.type === "message" ? (result.sender === "A" ? "我" : "AI") : "会";
 
   const copy = document.createElement("span");
   copy.className = "conversation-copy";
-
   const top = document.createElement("span");
   top.className = "conversation-item-top";
-
   const name = document.createElement("span");
   name.className = "conversation-name";
   name.textContent = result.conversationName;
-
   const preview = document.createElement("span");
   preview.className = "conversation-preview";
-
   const label = document.createElement("span");
   label.className = "search-result-label";
   label.textContent =
     result.type === "message"
       ? result.sender === "A"
         ? "我"
-        : "对方"
+        : "AI"
       : "对话";
-
-  const snippet = document.createTextNode(result.snippet);
-  preview.append(label, snippet);
+  preview.append(label, document.createTextNode(result.snippet));
   top.append(name);
   copy.append(top, preview);
   button.append(avatar, copy);
@@ -251,30 +331,37 @@ function renderConversationDirectory() {
     ? "查找结果"
     : "所有对话";
   elements.conversationCount.textContent = searching
-    ? `${state.searchResults.length} 条`
-    : `${state.conversations.length} 个`;
+    ? `${items.length} 条`
+    : `${items.length} 个`;
   elements.conversationEmpty.classList.toggle("is-hidden", items.length > 0);
 
   if (searching) {
     elements.conversationEmptyTitle.textContent = "没有找到相关内容";
-    elements.conversationEmptyDesktop.textContent = "换一个关键词再试试。";
-    elements.conversationEmptyMobile.textContent = "换一个关键词再试试。";
+    elements.conversationEmptyCopy.textContent = "换一个关键词再试试。";
   } else {
     elements.conversationEmptyTitle.textContent = "还没有对话";
-    elements.conversationEmptyDesktop.textContent =
-      "点击“新建对话”开始记录。";
-    elements.conversationEmptyMobile.textContent =
-      "电脑端创建对话后会显示在这里。";
+    elements.conversationEmptyCopy.textContent =
+      "点击“新建对话”开始和 AI 聊天。";
   }
 }
 
-function setComposerEnabled(enabled) {
-  elements.composer.classList.toggle("is-disabled", !enabled);
-  elements.input.disabled = !enabled;
-  elements.submit.disabled = !enabled || state.submitting;
+function updateComposerState() {
+  const selected = Boolean(state.selectedConversationId);
+  const configured = Boolean(state.config?.ai?.configured);
+  const enabled = selected && configured && !state.generating;
 
-  for (const option of elements.senderOptions) {
-    option.disabled = !enabled || Boolean(state.editingMessageId);
+  elements.composer.classList.toggle("is-disabled", !selected || !configured);
+  elements.input.disabled = !enabled;
+  elements.submit.disabled = !enabled || !elements.input.value.trim();
+  elements.submit.classList.toggle("is-hidden", state.generating);
+  elements.stop.classList.toggle("is-hidden", !state.generating);
+  elements.renameConversation.disabled = !selected || state.generating;
+  elements.deleteConversation.disabled = !selected || state.generating;
+
+  if (state.generating) {
+    elements.composerModeLabel.textContent = "AI 正在生成回复";
+  } else {
+    elements.composerModeLabel.textContent = "Markdown 已启用";
   }
 }
 
@@ -285,17 +372,16 @@ function renderSelectedConversation() {
   elements.currentConversationName.textContent = conversation
     ? conversation.name
     : "请选择一个对话";
-  elements.renameConversation.disabled = !hasSelection;
-  elements.deleteConversation.disabled = !hasSelection;
   elements.noSelection.classList.toggle("is-hidden", hasSelection);
   elements.chatScroll.classList.toggle("is-hidden", !hasSelection);
-  setComposerEnabled(hasSelection);
+  updateComposerState();
 }
 
 function createMessageRow(message) {
   const row = document.createElement("article");
   row.className = `message-row ${message.sender === "A" ? "is-mine" : "is-theirs"}`;
   row.dataset.messageId = message.id;
+  row.classList.toggle("is-streaming", Boolean(message.streaming));
 
   if (message.id === state.searchTargetMessageId) {
     row.classList.add("is-search-target");
@@ -304,51 +390,37 @@ function createMessageRow(message) {
   const avatar = document.createElement("div");
   avatar.className = "message-avatar";
   avatar.setAttribute("aria-hidden", "true");
-  avatar.textContent = message.sender === "A" ? "我" : "TA";
+  avatar.textContent = message.sender === "A" ? "我" : "AI";
 
   const column = document.createElement("div");
   column.className = "message-column";
-
   const bubble = document.createElement("div");
   bubble.className = "message-bubble";
-
   const markdown = document.createElement("div");
   markdown.className = "markdown-body";
-  markdown.innerHTML = message.renderedHtml;
+
+  if (message.streaming) {
+    if (message.content) {
+      markdown.textContent = message.content;
+      markdown.classList.add("streaming-text");
+    } else {
+      const thinking = document.createElement("span");
+      thinking.className = "thinking-dots";
+      thinking.innerHTML = "<i></i><i></i><i></i>";
+      thinking.setAttribute("aria-label", "AI 正在思考");
+      markdown.append(thinking);
+    }
+  } else {
+    markdown.innerHTML = message.renderedHtml;
+  }
+
   bubble.append(markdown);
   column.append(bubble);
 
-  const meta = document.createElement("div");
-  meta.className = "message-meta";
-
   if (message.edited) {
-    const edited = document.createElement("span");
-    edited.className = "edited-label";
-    edited.textContent = "已编辑";
-    meta.append(edited);
-  }
-
-  if (desktopMedia.matches) {
-    const actions = document.createElement("span");
-    actions.className = "message-actions";
-
-    const edit = document.createElement("button");
-    edit.className = "message-action";
-    edit.type = "button";
-    edit.dataset.action = "edit";
-    edit.textContent = "修改";
-
-    const remove = document.createElement("button");
-    remove.className = "message-action is-danger";
-    remove.type = "button";
-    remove.dataset.action = "delete";
-    remove.textContent = "删除";
-
-    actions.append(edit, remove);
-    meta.append(actions);
-  }
-
-  if (meta.childNodes.length > 0) {
+    const meta = document.createElement("div");
+    meta.className = "message-meta";
+    meta.textContent = "已编辑";
     column.append(meta);
   }
 
@@ -372,39 +444,32 @@ function renderMessages() {
     "is-hidden",
     !state.hasMore || state.messages.length === 0,
   );
-
-  if (state.searchTargetMessageId || state.hasNewer) {
-    elements.jumpLatest.textContent = "返回最新消息";
-    elements.jumpLatest.classList.remove("is-hidden");
-  } else {
-    elements.jumpLatest.textContent = "查看最新消息";
-  }
+  elements.jumpLatest.classList.toggle(
+    "is-hidden",
+    !state.searchTargetMessageId && !state.hasNewer,
+  );
 }
 
 function resetMessageState() {
   state.messages = [];
   state.conversationRevision = null;
+  state.total = 0;
   state.hasMore = false;
   state.hasNewer = false;
   state.olderCursor = null;
-  state.total = 0;
   state.searchTargetMessageId = null;
+  state.streamingMessageId = null;
   renderMessages();
 }
 
-function clearSelection() {
-  state.selectionToken += 1;
-  state.selectedConversationId = null;
-  resetMessageState();
-  exitEditMode();
-  renderConversationDirectory();
-  renderSelectedConversation();
-  document.body.classList.remove("mobile-chat-open");
-  setConnection("请选择一个对话", "online");
+function updateCharacterCount() {
+  const maximum = state.config?.maxMessageLength || 20_000;
+  elements.characterCount.textContent = `${elements.input.value.length} / ${maximum}`;
+  updateComposerState();
 }
 
 async function loadInitial() {
-  setConnection("正在读取对话列表…", "loading");
+  setConnection("正在读取对话列表…", "busy");
 
   try {
     const [config, result] = await Promise.all([
@@ -412,11 +477,25 @@ async function loadInitial() {
       api("/api/conversations"),
     ]);
 
+    state.config = config;
     state.refreshInterval = config.refreshInterval || 5000;
     state.conversations = result.conversations;
     state.globalRevision = result.revision;
+    elements.input.maxLength = config.maxMessageLength || 20_000;
+    elements.aiModelLabel.textContent = config.ai.configured
+      ? `已连接 · ${config.ai.model}`
+      : "AI 接口尚未配置";
+
+    if (!config.ai.configured) {
+      setFormStatus(
+        "请先在服务器 .env 中配置 OpenAI 兼容接口，再重启服务。",
+        "error",
+      );
+    }
+
     renderConversationDirectory();
     renderSelectedConversation();
+    updateCharacterCount();
 
     if (desktopMedia.matches && state.conversations.length > 0) {
       await selectConversation(state.conversations[0].id, {
@@ -425,8 +504,8 @@ async function loadInitial() {
     } else {
       setConnection(
         state.conversations.length > 0
-          ? "选择一个对话查看记录"
-          : "还没有对话",
+          ? "选择一个对话开始聊天"
+          : "新建一个独立对话",
         "online",
       );
     }
@@ -439,11 +518,7 @@ async function loadInitial() {
 
 async function selectConversation(
   conversationId,
-  {
-    openMobile = true,
-    force = false,
-    targetMessageId = null,
-  } = {},
+  { openMobile = true, force = false, targetMessageId = null } = {},
 ) {
   const conversation = state.conversations.find(
     (item) => item.id === conversationId,
@@ -451,6 +526,13 @@ async function selectConversation(
 
   if (!conversation) {
     return;
+  }
+
+  if (
+    state.generating &&
+    conversationId !== state.selectedConversationId
+  ) {
+    stopGeneration();
   }
 
   if (openMobile && !desktopMedia.matches) {
@@ -472,12 +554,11 @@ async function selectConversation(
   state.selectedConversationId = conversationId;
   resetMessageState();
   state.searchTargetMessageId = targetMessageId;
-  exitEditMode();
   renderConversationDirectory();
   renderSelectedConversation();
   setConnection(
     targetMessageId ? "正在定位查找结果…" : "正在读取聊天记录…",
-    "loading",
+    "busy",
   );
 
   const parameters = new URLSearchParams({ limit: "60" });
@@ -509,7 +590,6 @@ async function selectConversation(
     }
 
     renderMessages();
-
     requestAnimationFrame(() => {
       if (state.searchTargetMessageId) {
         focusSearchTarget();
@@ -517,13 +597,7 @@ async function selectConversation(
         scrollToBottom("auto");
       }
     });
-
-    setConnection(
-      state.searchTargetMessageId
-        ? `${result.total} 条记录 · 已定位到查找结果`
-        : `${result.total} 条记录 · 已同步到服务器`,
-      "online",
-    );
+    setConnection(`${result.total} 条消息 · 上下文独立`, "online");
   } catch (error) {
     if (token === state.selectionToken) {
       setConnection(error.message, "error");
@@ -532,14 +606,10 @@ async function selectConversation(
 }
 
 function focusSearchTarget() {
-  const target = [...elements.messageList.querySelectorAll("[data-message-id]")].find(
-    (row) => row.dataset.messageId === state.searchTargetMessageId,
+  const target = elements.messageList.querySelector(
+    `[data-message-id="${CSS.escape(state.searchTargetMessageId || "")}"]`,
   );
-
-  target?.scrollIntoView({
-    block: "center",
-    behavior: "smooth",
-  });
+  target?.scrollIntoView({ block: "center", behavior: "smooth" });
 }
 
 async function loadOlderMessages() {
@@ -557,8 +627,8 @@ async function loadOlderMessages() {
   state.loadingOlder = true;
   elements.loadOlder.disabled = true;
   elements.loadOlder.textContent = "正在加载…";
-  const oldHeight = elements.chatScroll.scrollHeight;
-  const oldTop = elements.chatScroll.scrollTop;
+  const previousHeight = elements.chatScroll.scrollHeight;
+  const previousTop = elements.chatScroll.scrollTop;
 
   try {
     const result = await api(
@@ -569,9 +639,8 @@ async function loadOlderMessages() {
       return;
     }
 
-    const existingIds = new Set(state.messages.map((message) => message.id));
-    const older = result.messages.filter((message) => !existingIds.has(message.id));
-
+    const existing = new Set(state.messages.map((message) => message.id));
+    const older = result.messages.filter((message) => !existing.has(message.id));
     state.messages = [...older, ...state.messages];
     state.hasMore = result.hasMore;
     state.olderCursor = result.olderCursor;
@@ -580,136 +649,43 @@ async function loadOlderMessages() {
     renderMessages();
 
     requestAnimationFrame(() => {
-      const addedHeight = elements.chatScroll.scrollHeight - oldHeight;
-      elements.chatScroll.scrollTop = oldTop + addedHeight;
+      elements.chatScroll.scrollTop =
+        previousTop + elements.chatScroll.scrollHeight - previousHeight;
     });
   } catch (error) {
     setConnection(error.message, "error");
   } finally {
     state.loadingOlder = false;
     elements.loadOlder.disabled = false;
-    elements.loadOlder.textContent = "加载更早的记录";
+    elements.loadOlder.textContent = "加载更早的消息";
   }
 }
 
-async function refreshSelectedMessages({ preservePosition = true } = {}) {
+async function refreshSelectedMessages({ scroll = false } = {}) {
   const conversationId = state.selectedConversationId;
-  if (!conversationId || state.searchTargetMessageId) {
+  if (!conversationId || state.generating) {
     return;
   }
 
-  const nearBottom = isNearBottom();
-  const previousScrollTop = elements.chatScroll.scrollTop;
-  const recentLimit = Math.min(200, Math.max(60, state.messages.length));
   const result = await api(
-    `/api/conversations/${encodeURIComponent(conversationId)}/messages?limit=${recentLimit}`,
+    `/api/conversations/${encodeURIComponent(conversationId)}/messages?limit=200`,
   );
 
   if (state.selectedConversationId !== conversationId) {
     return;
   }
 
-  if (result.total <= result.messages.length) {
-    state.messages = result.messages;
-  } else if (result.messages.length > 0) {
-    const recentStart = result.messages[0].seq;
-    const olderLoaded = state.messages.filter(
-      (message) => message.seq < recentStart,
-    );
-    state.messages = [...olderLoaded, ...result.messages];
-  }
-
+  state.messages = result.messages;
   state.conversationRevision = result.conversationRevision;
   state.total = result.total;
-  state.hasMore = state.messages.length < result.total;
-  state.hasNewer = false;
-  state.olderCursor =
-    state.hasMore && state.messages.length > 0 ? state.messages[0].seq : null;
+  state.hasMore = result.hasMore;
+  state.hasNewer = result.hasNewer;
+  state.olderCursor = result.olderCursor;
+  state.searchTargetMessageId = null;
   renderMessages();
 
-  requestAnimationFrame(() => {
-    if (nearBottom || !preservePosition) {
-      scrollToBottom(nearBottom ? "smooth" : "auto");
-    } else {
-      elements.chatScroll.scrollTop = previousScrollTop;
-      elements.jumpLatest.classList.remove("is-hidden");
-    }
-  });
-}
-
-async function refreshApp({ manual = false } = {}) {
-  if (state.refreshing) {
-    return;
-  }
-
-  state.refreshing = true;
-  elements.refreshButton.disabled = true;
-
-  try {
-    const result = await api("/api/conversations");
-
-    if (result.revision === state.globalRevision) {
-      if (manual) {
-        setConnection(
-          state.selectedConversationId
-            ? `${state.total} 条记录 · 已经是最新内容`
-            : "对话列表已经是最新内容",
-          "online",
-        );
-      }
-      return;
-    }
-
-    state.conversations = result.conversations;
-    state.globalRevision = result.revision;
-
-    if (state.searchQuery) {
-      await performSearch({ keepStatus: true });
-    } else {
-      renderConversationDirectory();
-    }
-
-    if (
-      state.selectedConversationId &&
-      !state.conversations.some(
-        (conversation) => conversation.id === state.selectedConversationId,
-      )
-    ) {
-      clearSelection();
-
-      if (desktopMedia.matches && state.conversations.length > 0) {
-        await selectConversation(state.conversations[0].id, {
-          openMobile: false,
-        });
-      }
-
-      return;
-    }
-
-    renderSelectedConversation();
-    const conversation = selectedConversation();
-
-    if (
-      conversation &&
-      conversation.revision !== state.conversationRevision &&
-      !state.searchTargetMessageId
-    ) {
-      await refreshSelectedMessages();
-    }
-
-    setConnection(
-      state.searchTargetMessageId
-        ? `${state.total} 条记录 · 正在查看查找结果`
-        : state.selectedConversationId
-          ? `${state.total} 条记录 · 刚刚同步`
-          : "对话列表已同步",
-      "online",
-    );
-  } catch (error) {
-    setConnection(error.message, "error");
-  } finally {
-    state.refreshing = false;
-    elements.refreshButton.disabled = false;
+  if (scroll) {
+    requestAnimationFrame(() => scrollToBottom("smooth"));
   }
 }
 
@@ -725,6 +701,65 @@ async function syncConversationList() {
   }
 
   renderSelectedConversation();
+}
+
+async function refreshApp({ manual = false } = {}) {
+  if (state.refreshing || state.generating) {
+    return;
+  }
+
+  state.refreshing = true;
+  elements.refreshButton.disabled = true;
+
+  try {
+    const result = await api("/api/conversations");
+    const changed = result.revision !== state.globalRevision;
+    state.conversations = result.conversations;
+    state.globalRevision = result.revision;
+
+    if (state.searchQuery) {
+      await performSearch({ keepStatus: true });
+    } else {
+      renderConversationDirectory();
+    }
+
+    if (
+      state.selectedConversationId &&
+      !state.conversations.some(
+        (conversation) => conversation.id === state.selectedConversationId,
+      )
+    ) {
+      state.selectedConversationId = null;
+      resetMessageState();
+      renderSelectedConversation();
+      return;
+    }
+
+    const conversation = selectedConversation();
+    if (
+      changed &&
+      conversation &&
+      conversation.revision !== state.conversationRevision
+    ) {
+      await refreshSelectedMessages();
+    }
+
+    renderSelectedConversation();
+
+    if (manual) {
+      setConnection(
+        state.selectedConversationId
+          ? `${state.total} 条消息 · 已刷新`
+          : "对话列表已刷新",
+        "online",
+      );
+    }
+  } catch (error) {
+    setConnection(error.message, "error");
+  } finally {
+    state.refreshing = false;
+    elements.refreshButton.disabled = false;
+  }
 }
 
 function scheduleSearch() {
@@ -750,8 +785,8 @@ async function performSearch({ keepStatus = false } = {}) {
     return;
   }
 
-  const requestToken = state.searchRequestToken + 1;
-  state.searchRequestToken = requestToken;
+  const token = state.searchRequestToken + 1;
+  state.searchRequestToken = token;
   elements.conversationHeadingTitle.textContent = "正在查找…";
   elements.conversationCount.textContent = "";
 
@@ -760,10 +795,7 @@ async function performSearch({ keepStatus = false } = {}) {
       `/api/search?q=${encodeURIComponent(query)}&limit=100`,
     );
 
-    if (
-      requestToken !== state.searchRequestToken ||
-      query !== state.searchQuery
-    ) {
+    if (token !== state.searchRequestToken || query !== state.searchQuery) {
       return;
     }
 
@@ -774,198 +806,173 @@ async function performSearch({ keepStatus = false } = {}) {
       setConnection(`找到 ${result.results.length} 条结果`, "online");
     }
   } catch (error) {
-    if (requestToken === state.searchRequestToken) {
-      state.searchResults = [];
-      renderConversationDirectory();
+    if (token === state.searchRequestToken) {
       setConnection(error.message, "error");
     }
   }
 }
 
 function clearSearch() {
-  window.clearTimeout(state.searchTimer);
-  state.searchRequestToken += 1;
+  elements.searchInput.value = "";
   state.searchQuery = "";
   state.searchResults = [];
-  elements.searchInput.value = "";
+  state.searchRequestToken += 1;
   elements.searchClear.classList.add("is-hidden");
   renderConversationDirectory();
-  elements.searchInput.focus();
 }
 
-function setSender(sender) {
-  if (!["A", "B"].includes(sender) || state.editingMessageId) {
-    return;
-  }
-
-  state.sender = sender;
-  setSenderVisual(sender);
-}
-
-function setSenderVisual(sender) {
-  for (const option of elements.senderOptions) {
-    const isActive = option.dataset.sender === sender;
-    option.classList.toggle("is-active", isActive);
-    option.setAttribute("aria-checked", String(isActive));
+function appendOrReplaceMessage(message) {
+  const index = state.messages.findIndex((item) => item.id === message.id);
+  if (index >= 0) {
+    state.messages[index] = message;
+  } else {
+    state.messages.push(message);
   }
 }
 
-function updateCharacterCount() {
-  elements.characterCount.textContent = `${elements.input.value.length} / 20000`;
-}
-
-function enterEditMode(message) {
-  state.editingMessageId = message.id;
-  state.sender = message.sender;
-  elements.input.value = message.content;
-  elements.composerModeLabel.textContent = "正在修改消息";
-  elements.submit.textContent = "保存修改";
-  elements.cancelEdit.classList.remove("is-hidden");
-  setSenderVisual(message.sender);
-  setComposerEnabled(true);
-  updateCharacterCount();
-  setFormStatus("");
-  elements.input.focus();
-}
-
-function exitEditMode({ clear = true } = {}) {
-  state.editingMessageId = null;
-  elements.composerModeLabel.textContent = "记录新消息";
-  elements.submit.textContent = "保存消息";
-  elements.cancelEdit.classList.add("is-hidden");
-
-  if (clear) {
-    elements.input.value = "";
+function ensureStreamingMessage() {
+  if (state.streamingMessageId) {
+    return state.messages.find(
+      (message) => message.id === state.streamingMessageId,
+    );
   }
 
-  setSenderVisual(state.sender);
-  setComposerEnabled(Boolean(state.selectedConversationId));
-  updateCharacterCount();
+  state.streamingMessageId = `stream-${Date.now()}-${Math.random()
+    .toString(16)
+    .slice(2)}`;
+  const message = {
+    id: state.streamingMessageId,
+    sender: "B",
+    content: "",
+    renderedHtml: "",
+    edited: false,
+    streaming: true,
+  };
+  state.messages.push(message);
+  state.total += 1;
+  renderMessages();
+  requestAnimationFrame(() => scrollToBottom("smooth"));
+  return message;
 }
 
 async function submitMessage() {
   const conversationId = state.selectedConversationId;
-  if (!conversationId || state.submitting) {
-    return;
-  }
-
   const content = elements.input.value.trim();
-  if (!content) {
-    setFormStatus("请先输入消息内容", "error");
-    elements.input.focus();
+
+  if (
+    !conversationId ||
+    !content ||
+    state.generating ||
+    !state.config?.ai?.configured
+  ) {
     return;
   }
 
-  state.submitting = true;
-  elements.submit.disabled = true;
-  setFormStatus(state.editingMessageId ? "正在保存修改…" : "正在保存消息…");
+  if (state.searchTargetMessageId || state.hasNewer) {
+    await selectConversation(conversationId, {
+      force: true,
+      openMobile: false,
+    });
+  }
+
+  state.generating = true;
+  state.generationController = new AbortController();
+  state.streamingMessageId = null;
+  updateComposerState();
+  setFormStatus("");
+  setConnection("AI 正在回复…", "busy");
 
   try {
-    if (state.editingMessageId) {
-      const messageId = state.editingMessageId;
-      const result = await api(
-        `/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}`,
-        {
-          method: "PUT",
-          body: JSON.stringify({ content }),
-        },
-      );
-      const index = state.messages.findIndex(
-        (message) => message.id === messageId,
-      );
+    const response = await fetch(
+      `/api/conversations/${encodeURIComponent(conversationId)}/chat`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+        signal: state.generationController.signal,
+      },
+    );
 
-      if (index !== -1) {
-        state.messages[index] = result.message;
-      }
-
-      state.conversationRevision = result.conversation.revision;
-      exitEditMode();
-      renderMessages();
-      setFormStatus("修改已保存");
-      await syncConversationList();
-    } else {
-      const result = await api(
-        `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            sender: state.sender,
-            content,
-          }),
-        },
-      );
-
-      elements.input.value = "";
-      updateCharacterCount();
-      await syncConversationList();
-
-      if (state.searchTargetMessageId || state.hasNewer) {
-        await selectConversation(conversationId, {
-          force: true,
-          openMobile: false,
-        });
-      } else {
-        state.messages.push(result.message);
-        state.conversationRevision = result.conversation.revision;
-        state.total += 1;
-        renderMessages();
-        requestAnimationFrame(() => scrollToBottom("smooth"));
-      }
-
-      setFormStatus("消息已保存");
+    if (!response.ok) {
+      throw new Error(await responseError(response));
     }
 
-    setConnection(`${state.total} 条记录 · 刚刚保存`, "online");
+    let streamError = null;
+
+    await consumeEventStream(response, (eventName, payload) => {
+      if (state.selectedConversationId !== conversationId) {
+        return;
+      }
+
+      if (eventName === "user") {
+        appendOrReplaceMessage(payload.message);
+        upsertConversation(payload.conversation);
+        state.conversationRevision = payload.conversation.revision;
+        state.total = Math.max(state.total + 1, payload.conversation.messageCount);
+        elements.input.value = "";
+        updateCharacterCount();
+        renderConversationDirectory();
+        renderMessages();
+        requestAnimationFrame(() => scrollToBottom("smooth"));
+      } else if (eventName === "delta") {
+        const streaming = ensureStreamingMessage();
+        streaming.content += payload.content || "";
+        renderMessages();
+        requestAnimationFrame(() => scrollToBottom("auto"));
+      } else if (eventName === "done") {
+        state.messages = state.messages.filter(
+          (message) => message.id !== state.streamingMessageId,
+        );
+        state.streamingMessageId = null;
+        appendOrReplaceMessage(payload.message);
+        upsertConversation(payload.conversation);
+        state.conversationRevision = payload.conversation.revision;
+        state.total = payload.conversation.messageCount;
+        renderConversationDirectory();
+        renderMessages();
+        requestAnimationFrame(() => scrollToBottom("smooth"));
+      } else if (eventName === "error") {
+        streamError = new Error(payload.error || "AI 回复生成失败");
+      }
+    });
+
+    if (streamError) {
+      throw streamError;
+    }
+
+    setConnection(`${state.total} 条消息 · AI 回复完成`, "online");
   } catch (error) {
-    setFormStatus(error.message, "error");
+    const stopped =
+      error?.name === "AbortError" || state.generationController?.signal.aborted;
+
+    state.messages = state.messages.filter(
+      (message) => message.id !== state.streamingMessageId,
+    );
+    state.streamingMessageId = null;
+    renderMessages();
+
+    if (stopped) {
+      setFormStatus("已停止生成，已收到的部分会保存在服务器。");
+      setConnection("AI 回复已停止", "online");
+    } else {
+      setFormStatus(error.message, "error");
+      setConnection("AI 回复失败", "error");
+    }
+
+    window.setTimeout(() => {
+      refreshSelectedMessages({ scroll: true }).catch(() => {});
+      syncConversationList().catch(() => {});
+    }, 180);
   } finally {
-    state.submitting = false;
-    elements.submit.disabled = !state.selectedConversationId;
+    state.generating = false;
+    state.generationController = null;
+    updateComposerState();
+    syncConversationList().catch(() => {});
   }
 }
 
-async function deleteMessage(message) {
-  const conversationId = state.selectedConversationId;
-  if (!conversationId) {
-    return;
-  }
-
-  const summary = message.content.replace(/\s+/g, " ").slice(0, 38);
-  const confirmed = window.confirm(`确定删除这条记录吗？\n\n${summary}`);
-
-  if (!confirmed) {
-    return;
-  }
-
-  try {
-    await api(
-      `/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(message.id)}`,
-      { method: "DELETE" },
-    );
-
-    if (state.editingMessageId === message.id) {
-      exitEditMode();
-    }
-
-    await syncConversationList();
-
-    if (state.searchTargetMessageId === message.id) {
-      await selectConversation(conversationId, {
-        force: true,
-        openMobile: false,
-      });
-    } else {
-      state.messages = state.messages.filter((item) => item.id !== message.id);
-      state.total = Math.max(0, state.total - 1);
-      state.conversationRevision = selectedConversation()?.revision ?? null;
-      renderMessages();
-    }
-
-    setFormStatus("消息已删除");
-    setConnection(`${state.total} 条记录 · 刚刚保存`, "online");
-  } catch (error) {
-    setFormStatus(error.message, "error");
-  }
+function stopGeneration() {
+  state.generationController?.abort();
 }
 
 function openConversationDialog(mode) {
@@ -981,14 +988,14 @@ function openConversationDialog(mode) {
     elements.dialogEyebrow.textContent = "NEW CONVERSATION";
     elements.dialogTitle.textContent = "新建对话";
     elements.dialogDescription.textContent =
-      "给这段聊天记录起一个容易辨认的名字。";
+      "新对话不会携带其他对话的历史，每个对话都是独立上下文。";
     elements.dialogName.value = "";
     elements.dialogConfirm.textContent = "创建对话";
   } else {
     elements.dialogEyebrow.textContent = "RENAME CONVERSATION";
     elements.dialogTitle.textContent = "重命名对话";
     elements.dialogDescription.textContent =
-      "修改名称不会影响这个对话中已经保存的消息。";
+      "修改名称不会改变这个对话已经保存的上下文。";
     elements.dialogName.value = conversation.name;
     elements.dialogConfirm.textContent = "保存名称";
   }
@@ -1022,10 +1029,11 @@ async function saveConversation(event) {
       await syncConversationList();
       elements.dialog.close();
       await selectConversation(result.conversation.id, {
-        openMobile: false,
+        openMobile: true,
         force: true,
       });
-      setFormStatus("新对话已创建");
+      elements.input.focus();
+      setFormStatus("新对话已创建，这是一个全新的上下文。");
     } else {
       const conversationId = state.selectedConversationId;
       await api(`/api/conversations/${encodeURIComponent(conversationId)}`, {
@@ -1035,7 +1043,7 @@ async function saveConversation(event) {
       await syncConversationList();
       state.conversationRevision = selectedConversation()?.revision ?? null;
       elements.dialog.close();
-      setConnection(`${state.total} 条记录 · 名称已修改`, "online");
+      setConnection(`${state.total} 条消息 · 名称已修改`, "online");
     }
   } catch (error) {
     elements.dialogError.textContent = error.message;
@@ -1046,12 +1054,12 @@ async function saveConversation(event) {
 
 async function deleteCurrentConversation() {
   const conversation = selectedConversation();
-  if (!conversation) {
+  if (!conversation || state.generating) {
     return;
   }
 
   const confirmed = window.confirm(
-    `确定删除对话“${conversation.name}”吗？\n\n其中的 ${conversation.messageCount} 条聊天记录也会一起删除，且无法恢复。`,
+    `确定删除对话“${conversation.name}”吗？\n\n其中的 ${conversation.messageCount} 条消息也会一起删除，且无法恢复。`,
   );
 
   if (!confirmed) {
@@ -1064,7 +1072,6 @@ async function deleteCurrentConversation() {
     });
     state.selectedConversationId = null;
     resetMessageState();
-    exitEditMode();
     await syncConversationList();
 
     if (desktopMedia.matches && state.conversations.length > 0) {
@@ -1073,7 +1080,9 @@ async function deleteCurrentConversation() {
         force: true,
       });
     } else {
-      clearSelection();
+      renderSelectedConversation();
+      document.body.classList.remove("mobile-chat-open");
+      setConnection("选择或新建一个对话", "online");
     }
   } catch (error) {
     setConnection(error.message, "error");
@@ -1081,12 +1090,9 @@ async function deleteCurrentConversation() {
 }
 
 function startPolling() {
-  if (state.pollTimer) {
-    window.clearInterval(state.pollTimer);
-  }
-
+  window.clearInterval(state.pollTimer);
   state.pollTimer = window.setInterval(() => {
-    if (!document.hidden) {
+    if (!document.hidden && !state.generating) {
       refreshApp();
     }
   }, state.refreshInterval);
@@ -1116,6 +1122,9 @@ elements.deleteConversation.addEventListener(
   deleteCurrentConversation,
 );
 elements.backToConversations.addEventListener("click", () => {
+  if (state.generating) {
+    stopGeneration();
+  }
   document.body.classList.remove("mobile-chat-open");
 });
 
@@ -1127,47 +1136,15 @@ elements.dialog.addEventListener("click", (event) => {
   }
 });
 
-elements.senderOptions.forEach((option) => {
-  option.addEventListener("click", () => setSender(option.dataset.sender));
-});
-
 elements.input.addEventListener("input", updateCharacterCount);
 elements.input.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && event.ctrlKey) {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
     submitMessage();
   }
 });
-
 elements.submit.addEventListener("click", submitMessage);
-elements.cancelEdit.addEventListener("click", () => {
-  exitEditMode();
-  setFormStatus("");
-});
-
-elements.messageList.addEventListener("click", (event) => {
-  if (!desktopMedia.matches) {
-    return;
-  }
-
-  const action = event.target.closest("[data-action]");
-  const row = event.target.closest("[data-message-id]");
-  if (!action || !row) {
-    return;
-  }
-
-  const message = state.messages.find((item) => item.id === row.dataset.messageId);
-  if (!message) {
-    return;
-  }
-
-  if (action.dataset.action === "edit") {
-    enterEditMode(message);
-  } else if (action.dataset.action === "delete") {
-    deleteMessage(message);
-  }
-});
-
+elements.stop.addEventListener("click", stopGeneration);
 elements.loadOlder.addEventListener("click", loadOlderMessages);
 elements.refreshButton.addEventListener("click", () =>
   refreshApp({ manual: true }),
@@ -1202,8 +1179,6 @@ elements.chatScroll.addEventListener(
 );
 
 desktopMedia.addEventListener("change", (event) => {
-  renderMessages();
-
   if (event.matches) {
     document.body.classList.remove("mobile-chat-open");
 
@@ -1214,18 +1189,13 @@ desktopMedia.addEventListener("change", (event) => {
     }
   } else {
     document.body.classList.remove("mobile-chat-open");
-
-    if (state.editingMessageId) {
-      exitEditMode();
-    }
   }
 });
 
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) {
+  if (!document.hidden && !state.generating) {
     refreshApp();
   }
 });
 
-updateCharacterCount();
 loadInitial();

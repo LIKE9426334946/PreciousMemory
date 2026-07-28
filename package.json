@@ -2,12 +2,12 @@
   "name": "precious-memory",
   "version": "1.0.0",
   "private": true,
-  "description": "A private two-person chat history recorder with Markdown support.",
+  "description": "A private real-time AI chat app with isolated SQLite conversations.",
   "main": "backend/server.js",
   "scripts": {
     "start": "node backend/server.js",
     "dev": "NODE_ENV=development node --watch backend/server.js",
-    "check": "node --check backend/server.js && node --check backend/app.js && node --check backend/conversation-store.js && node --check public/app.js",
+    "check": "node --check backend/server.js && node --check backend/app.js && node --check backend/conversation-store.js && node --check backend/openai-client.js && node --check public/app.js",
     "test": "node --test",
     "benchmark": "node scripts/benchmark.js"
   },

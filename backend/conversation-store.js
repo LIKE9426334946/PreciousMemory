@@ -238,6 +238,13 @@ class ConversationStore {
       FROM messages
       WHERE conversation_id = ?
     `);
+    this.statements.listContextMessages = this.db.prepare(`
+      SELECT id, conversation_id, seq, sender, content, edited
+      FROM messages
+      WHERE conversation_id = ?
+      ORDER BY seq DESC
+      LIMIT ?
+    `);
 
     this.statements.searchConversationNames = this.db.prepare(`
       SELECT id, name, revision, message_count, sort_order
@@ -554,6 +561,44 @@ class ConversationStore {
 
   addMessage(conversationId, { sender, content }) {
     return this.addMessageTransaction(conversationId, sender, content);
+  }
+
+  getContextMessages(
+    conversationId,
+    { maxMessages = 200, maxCharacters = 120_000 } = {},
+  ) {
+    if (!this.statements.getConversation.get(conversationId)) {
+      return null;
+    }
+
+    const rows = this.statements.listContextMessages.all(
+      conversationId,
+      maxMessages,
+    );
+    const selected = [];
+    let characterCount = 0;
+
+    for (const row of rows) {
+      const nextLength = row.content.length;
+
+      if (
+        selected.length > 0 &&
+        characterCount + nextLength > maxCharacters
+      ) {
+        break;
+      }
+
+      selected.push(row);
+      characterCount += nextLength;
+    }
+
+    selected.reverse();
+
+    while (selected.length > 1 && selected[0].sender === "B") {
+      selected.shift();
+    }
+
+    return selected.map((row) => this.presentStoredMessage(row));
   }
 
   updateMessage(conversationId, messageId, content) {

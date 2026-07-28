@@ -6,8 +6,12 @@ const test = require("node:test");
 
 const { createApp, renderMarkdown } = require("../backend/app");
 const { ConversationStore } = require("../backend/conversation-store");
+const {
+  OpenAICompatibleClient,
+  resolveChatCompletionsUrl,
+} = require("../backend/openai-client");
 
-async function startTestServer(t) {
+async function startTestServer(t, { aiClient } = {}) {
   const temporaryDirectory = await fs.mkdtemp(
     path.join(os.tmpdir(), "precious-memory-"),
   );
@@ -18,6 +22,7 @@ async function startTestServer(t) {
 
   const app = createApp({
     store,
+    aiClient,
     publicDirectory: path.join(__dirname, "..", "public"),
   });
   const server = app.listen(0, "127.0.0.1");
@@ -71,6 +76,39 @@ async function createMessage(baseUrl, conversationId, sender, content) {
   return result.body.message;
 }
 
+async function sendChat(baseUrl, conversationId, content) {
+  const response = await fetch(
+    `${baseUrl}/api/conversations/${conversationId}/chat`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    },
+  );
+  return { response, body: await response.text() };
+}
+
+class CapturingAIClient {
+  constructor() {
+    this.calls = [];
+  }
+
+  isConfigured() {
+    return true;
+  }
+
+  publicConfig() {
+    return { configured: true, model: "test-model" };
+  }
+
+  async *streamChat(messages) {
+    this.calls.push(messages.map((message) => ({ ...message })));
+    const lastUserMessage = messages.at(-1).content;
+    yield "AI 回复：";
+    yield lastUserMessage;
+  }
+}
+
 test("Markdown is rendered and unsafe HTML is not preserved", () => {
   const html = renderMarkdown(
     "**重点** <script>alert('x')</script> [链接](javascript:alert(1))",
@@ -79,6 +117,158 @@ test("Markdown is rendered and unsafe HTML is not preserved", () => {
   assert.match(html, /<strong>重点<\/strong>/);
   assert.doesNotMatch(html, /<script>/);
   assert.doesNotMatch(html, /href=["']javascript:/);
+});
+
+test("OpenAI compatible client sends Chat Completions format and reads SSE deltas", async () => {
+  let capturedUrl;
+  let capturedOptions;
+  const fetchImpl = async (url, options) => {
+    capturedUrl = url;
+    capturedOptions = options;
+    return new Response(
+      [
+        'data: {"choices":[{"delta":{"role":"assistant","content":""}}]}',
+        "",
+        'data: {"choices":[{"delta":{"content":"你好"}}]}',
+        "",
+        'data: {"choices":[{"delta":{"content":"呀"}}]}',
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n"),
+      {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      },
+    );
+  };
+  const client = new OpenAICompatibleClient({
+    apiKey: "test-secret",
+    baseUrl: "https://example.test/v1/",
+    model: "compatible-model",
+    systemPrompt: "只回答测试内容",
+    fetchImpl,
+  });
+  const chunks = [];
+
+  for await (const chunk of client.streamChat([
+    { sender: "A", content: "第一问" },
+    { sender: "B", content: "第一答" },
+    { sender: "A", content: "第二问" },
+  ])) {
+    chunks.push(chunk);
+  }
+
+  assert.equal(
+    capturedUrl,
+    "https://example.test/v1/chat/completions",
+  );
+  assert.equal(capturedOptions.headers.Authorization, "Bearer test-secret");
+  assert.deepEqual(chunks, ["你好", "呀"]);
+
+  const requestBody = JSON.parse(capturedOptions.body);
+  assert.equal(requestBody.model, "compatible-model");
+  assert.equal(requestBody.stream, true);
+  assert.deepEqual(requestBody.messages, [
+    { role: "system", content: "只回答测试内容" },
+    { role: "user", content: "第一问" },
+    { role: "assistant", content: "第一答" },
+    { role: "user", content: "第二问" },
+  ]);
+  assert.equal(
+    resolveChatCompletionsUrl(
+      "https://example.test/v1/chat/completions",
+    ),
+    "https://example.test/v1/chat/completions",
+  );
+});
+
+test("real-time chat streams and keeps every conversation context isolated", async (t) => {
+  const aiClient = new CapturingAIClient();
+  const baseUrl = await startTestServer(t, { aiClient });
+  const study = await createConversation(baseUrl, "学习");
+  const daily = await createConversation(baseUrl, "日常");
+
+  const firstStudy = await sendChat(baseUrl, study.id, "解释 Attention");
+  assert.equal(firstStudy.response.status, 200);
+  assert.match(firstStudy.response.headers.get("content-type"), /event-stream/);
+  assert.match(firstStudy.body, /event: user/);
+  assert.match(firstStudy.body, /event: delta/);
+  assert.match(firstStudy.body, /event: done/);
+
+  const firstDaily = await sendChat(baseUrl, daily.id, "今天吃什么");
+  assert.equal(firstDaily.response.status, 200);
+
+  const secondStudy = await sendChat(baseUrl, study.id, "继续讲");
+  assert.equal(secondStudy.response.status, 200);
+
+  assert.deepEqual(
+    aiClient.calls[0].map((message) => [
+      message.sender,
+      message.content,
+    ]),
+    [["A", "解释 Attention"]],
+  );
+  assert.deepEqual(
+    aiClient.calls[1].map((message) => [
+      message.sender,
+      message.content,
+    ]),
+    [["A", "今天吃什么"]],
+  );
+  assert.deepEqual(
+    aiClient.calls[2].map((message) => [
+      message.sender,
+      message.content,
+    ]),
+    [
+      ["A", "解释 Attention"],
+      ["B", "AI 回复：解释 Attention"],
+      ["A", "继续讲"],
+    ],
+  );
+
+  const studyHistory = await requestJson(
+    `${baseUrl}/api/conversations/${study.id}/messages?limit=20`,
+  );
+  const dailyHistory = await requestJson(
+    `${baseUrl}/api/conversations/${daily.id}/messages?limit=20`,
+  );
+
+  assert.deepEqual(
+    studyHistory.body.messages.map((message) => message.sender),
+    ["A", "B", "A", "B"],
+  );
+  assert.deepEqual(
+    dailyHistory.body.messages.map((message) => message.content),
+    ["今天吃什么", "AI 回复：今天吃什么"],
+  );
+  assert.equal(
+    studyHistory.body.messages.some((message) =>
+      message.content.includes("今天吃什么"),
+    ),
+    false,
+  );
+});
+
+test("chat endpoint refuses requests before the AI API is configured", async (t) => {
+  const baseUrl = await startTestServer(t);
+  const conversation = await createConversation(baseUrl, "未配置测试");
+  const result = await requestJson(
+    `${baseUrl}/api/conversations/${conversation.id}/chat`,
+    {
+      method: "POST",
+      body: JSON.stringify({ content: "你好" }),
+    },
+  );
+
+  assert.equal(result.response.status, 503);
+  assert.match(result.body.error, /OPENAI_API_KEY/);
+
+  const history = await requestJson(
+    `${baseUrl}/api/conversations/${conversation.id}/messages`,
+  );
+  assert.equal(history.body.total, 0);
 });
 
 test("conversation API supports create, rename, list and delete", async (t) => {

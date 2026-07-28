@@ -1,97 +1,167 @@
 # PreciousMemory
 
-PreciousMemory 是一个私人使用的双人聊天记录 Web 应用。它不是实时聊天软件：电脑端用于创建多个对话并手动维护消息，手机端用于从对话目录进入不同聊天并查看历史记录。
+PreciousMemory 是一个部署在私人 Ubuntu 服务器上的实时 AI 聊天应用。系统中只有“我”和“AI”两个角色，可以新建、命名、重命名、删除多个对话。
+
+每个对话都是独立上下文：发送消息时，后端只读取当前对话的 SQLite 历史并调用 OpenAI 兼容的 Chat Completions 接口，不会把其他对话的内容发送给模型。
 
 ## 当前功能
 
-- 固定两个角色：用户 A「我」、用户 B「对方」
-- 创建多个互相独立的对话
-- 新建、命名、重命名和删除对话
-- 电脑宽屏显示对话目录和消息编辑区
-- 手机端显示对话目录，进入对话后为只读模式
-- 用户 A 气泡靠右，用户 B 气泡靠左
+- 新建多个独立 AI 对话
+- 命名、重命名和删除对话
+- 电脑端与手机端都可以聊天
+- AI 回复实时流式显示
+- 支持停止生成；已收到的部分会保存
+- 使用 SQLite 保存全部消息
+- 支持搜索对话名称和消息正文
+- 点击搜索结果定位具体消息
 - 支持 Markdown、代码块、表格和长文本
-- 自动加载最新消息，上滑加载更早记录
-- 使用 SQLite 保存约 500 个对话和 500 万字聊天内容
-- 支持搜索对话名称和所有消息正文
-- 点击搜索结果可直接定位到具体消息
-- 使用 FTS5 三元组索引加速中文片段查找
-- 不存储、不显示对话时间或消息时间
-- 不使用云数据库、账号系统、Docker 或 Kubernetes
-- 提供新增、查询、修改、删除消息的 REST API，便于后期扩展
+- 不存储、不显示消息时间或对话时间
+- API Key 只保存在服务器，不会发送到浏览器
+- 可连接 OpenAI，也可连接采用相同 `/v1/chat/completions` 格式的服务
+- AI 系统提示词保存在独立文本文件中，修改提示词不需要改代码
 
-> 手机端“只读”是前端界面限制，不是权限控制。当前版本没有登录系统，因此能访问服务器端口的人仍可直接调用写入接口。建议暂时仅在可信网络中使用，后续再增加登录和鉴权。
+## 调用流程
+
+```text
+浏览器
+  ↓ POST /api/conversations/:id/chat
+Nginx :16023
+  ↓ SSE 实时转发
+Node.js :3023
+  ├─ 读取当前对话的 SQLite 历史
+  ├─ 调用 OpenAI 兼容 /v1/chat/completions
+  └─ 保存“我”和“AI”的消息
+```
+
+对话之间不会共用历史：
+
+```text
+对话 A → 只发送 A 的消息历史 → AI
+对话 B → 只发送 B 的消息历史 → AI
+```
+
+为了避免对话过长导致请求超出模型上下文或费用不断增加，默认最多向 AI 发送当前对话最近 `200` 条、合计约 `120000` 个字符。SQLite 中的更早消息不会删除，仍然可以查看和搜索。
 
 ## 技术结构
 
-```text
-浏览器 → Nginx :16023 → Node.js :3023 → SQLite + FTS5
-```
-
 - Node.js 20+
-- Express
-- better-sqlite3 12.x
-- SQLite WAL
-- SQLite FTS5 trigram
+- Express 5
+- SQLite + WAL
+- SQLite FTS5 trigram 中文搜索
+- OpenAI 兼容 Chat Completions
+- SSE 流式输出
 - markdown-it
 - sanitize-html
 - Nginx
 - systemd
 
-## 目录说明
+## 目录
 
 ```text
 PreciousMemory/
 ├── backend/
 │   ├── app.js
 │   ├── conversation-store.js
+│   ├── openai-client.js
 │   └── server.js
+├── config/
+│   └── system-prompt.txt
 ├── data/
-│   └── precious-memory.sqlite  # 第一次启动时自动创建，不提交到 Git
+│   └── precious-memory.sqlite
 ├── deploy/
-│   ├── nginx/
-│   │   └── preciousmemory.conf
-│   └── systemd/
-│       └── preciousmemory.service
+│   ├── nginx/preciousmemory.conf
+│   └── systemd/preciousmemory.service
 ├── public/
 │   ├── app.js
 │   ├── index.html
 │   └── styles.css
-├── scripts/
-│   └── benchmark.js
-├── test/
-│   └── api.test.js
+├── test/api.test.js
+├── .env.example
 ├── package.json
 └── README.md
 ```
 
-## 本地运行
+正式数据库和 `.env` 都已加入 `.gitignore`，不会提交到 GitHub。
+
+## AI 接口配置
+
+应用使用 OpenAI Chat Completions 格式：
+
+```http
+POST /v1/chat/completions
+Authorization: Bearer OPENAI_API_KEY
+Content-Type: application/json
+```
+
+核心请求体：
+
+```json
+{
+  "model": "gpt-5.6",
+  "messages": [
+    {
+      "role": "system",
+      "content": "config/system-prompt.txt 中的提示词"
+    },
+    {
+      "role": "user",
+      "content": "你好"
+    }
+  ],
+  "stream": true
+}
+```
+
+复制配置模板：
 
 ```bash
-npm install
-npm test
-npm start
+cd /opt/PreciousMemory
+cp .env.example .env
+chmod 600 .env
+nano .env
 ```
 
-默认只监听：
+OpenAI 官方接口示例：
 
-```text
-http://127.0.0.1:3023
+```ini
+OPENAI_API_KEY=你的真实APIKey
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-5.6
+
+AI_SYSTEM_PROMPT_FILE=/opt/PreciousMemory/config/system-prompt.txt
+AI_MAX_CONTEXT_MESSAGES=200
+AI_MAX_CONTEXT_CHARACTERS=120000
+OPENAI_TIMEOUT_MS=180000
 ```
 
-可以使用环境变量修改：
+如果使用其他 OpenAI 兼容服务，修改下面三个值即可：
+
+```ini
+OPENAI_API_KEY=兼容服务的Key
+OPENAI_BASE_URL=https://兼容服务地址/v1
+OPENAI_MODEL=兼容服务提供的模型名称
+```
+
+`OPENAI_BASE_URL` 可以填写 `/v1` 基础地址，也可以直接填写完整的 `/chat/completions` 地址，程序会自动识别。
+
+API Key 不能写入 `public/app.js`、HTML、systemd 配置文件或任何将提交到 GitHub 的文件。
+
+## 修改 AI 提示词
+
+直接编辑：
 
 ```bash
-HOST=127.0.0.1 PORT=3023 \
-DATABASE_FILE=/opt/PreciousMemory/data/precious-memory.sqlite \
-npm start
+nano /opt/PreciousMemory/config/system-prompt.txt
+systemctl restart preciousmemory
 ```
 
-## Ubuntu 服务器完整部署
+每次 Node.js 服务启动时会重新读取该文件。所有对话使用同一份系统提示词，但消息历史仍按对话完全隔离。
+
+## Ubuntu 服务器部署
 
 以下命令全部使用 `root` 用户执行，不需要 `sudo`。
 
-### 1. 创建项目目录并下载代码
+### 1. 下载项目并安装依赖
 
 首次部署：
 
@@ -99,10 +169,11 @@ npm start
 mkdir -p /opt
 git clone https://github.com/LIKE9426334946/PreciousMemory.git /opt/PreciousMemory
 cd /opt/PreciousMemory
+git checkout main
 npm ci --omit=dev
 ```
 
-如果已经克隆过仓库：
+已有项目更新：
 
 ```bash
 cd /opt/PreciousMemory
@@ -110,83 +181,109 @@ git pull origin main
 npm ci --omit=dev
 ```
 
-`npm ci --omit=dev` 会严格按照 `package-lock.json` 安装生产依赖。聊天数据文件不会被 Git 跟踪，因此以后 `git pull` 不会覆盖已有聊天记录。
-
-### 2. 创建并安装 systemd 服务
-
-项目已经提供完整配置：
-
-```text
-/opt/PreciousMemory/deploy/systemd/preciousmemory.service
-```
-
-复制配置并启用：
+### 2. 配置 AI 接口
 
 ```bash
-cp /opt/PreciousMemory/deploy/systemd/preciousmemory.service /etc/systemd/system/preciousmemory.service
+cd /opt/PreciousMemory
+cp -n .env.example .env
+chmod 600 .env
+nano .env
+```
+
+把 `OPENAI_API_KEY` 改成真实 Key，并检查 `OPENAI_BASE_URL` 与 `OPENAI_MODEL`。
+
+不要使用下面这种命令直接显示真实 Key：
+
+```text
+cat .env
+```
+
+因为它可能将 Key 留在终端录屏、日志或聊天截图中。
+
+### 3. 安装 systemd 服务
+
+```bash
+cp /opt/PreciousMemory/deploy/systemd/preciousmemory.service \
+  /etc/systemd/system/preciousmemory.service
+
 systemctl daemon-reload
 systemctl enable --now preciousmemory
 systemctl status preciousmemory
 ```
 
-systemd 的核心配置为：
+systemd 会读取：
+
+```text
+/opt/PreciousMemory/.env
+```
+
+服务仍然使用：
 
 ```ini
 User=root
 WorkingDirectory=/opt/PreciousMemory
-Environment=NODE_ENV=production
 Environment=HOST=127.0.0.1
 Environment=PORT=3023
 Environment=DATABASE_FILE=/opt/PreciousMemory/data/precious-memory.sqlite
-ExecStart=/usr/bin/node /opt/PreciousMemory/backend/server.js
-Restart=always
+EnvironmentFile=-/opt/PreciousMemory/.env
 ```
 
-查看运行日志：
+查看日志：
 
 ```bash
 journalctl -u preciousmemory -f
 ```
 
-### 3. 创建并启用 Nginx 配置
+### 4. 更新 Nginx 配置
 
-项目已经提供完整配置：
+这一版必须更新 Nginx 配置，因为实时回复需要关闭代理缓冲并延长读取超时：
+
+```bash
+cp /opt/PreciousMemory/deploy/nginx/preciousmemory.conf \
+  /etc/nginx/sites-available/preciousmemory.conf
+
+ln -s /etc/nginx/sites-available/preciousmemory.conf \
+  /etc/nginx/sites-enabled/preciousmemory.conf
+
+nginx -t
+systemctl reload nginx
+```
+
+如果启用链接已经存在，`ln -s` 报 `File exists` 时可忽略，然后继续执行：
+
+```bash
+nginx -t
+systemctl reload nginx
+```
+
+端口保持不变：
 
 ```text
-/opt/PreciousMemory/deploy/nginx/preciousmemory.conf
+公网 16023 → Nginx → 127.0.0.1:3023
 ```
 
-复制并启用：
+### 5. 重启并检查
 
 ```bash
-cp /opt/PreciousMemory/deploy/nginx/preciousmemory.conf /etc/nginx/sites-available/preciousmemory.conf
-ln -s /etc/nginx/sites-available/preciousmemory.conf /etc/nginx/sites-enabled/preciousmemory.conf
-nginx -t
-systemctl reload nginx
-```
+systemctl restart preciousmemory
+systemctl status preciousmemory
 
-如果启用链接已经存在，不要重复创建，直接执行：
-
-```bash
-nginx -t
-systemctl reload nginx
-```
-
-Nginx 对外监听 `16023`，并转发到仅监听本机的 Node.js `3023` 端口。配置中已经保留 WebSocket 升级请求头，方便后期扩展。
-
-### 4. 检查服务
-
-检查 Node.js 内部接口：
-
-```bash
 curl http://127.0.0.1:3023/api/health
+curl http://127.0.0.1:16023/api/config
 ```
 
-检查 Nginx 外部端口：
+`/api/config` 返回下面的状态时，说明 Key 和模型配置已被服务读取：
 
-```bash
-curl http://127.0.0.1:16023/api/health
+```json
+{
+  "ai": {
+    "configured": true,
+    "model": "gpt-5.6"
+  }
+}
 ```
+
+该接口不会返回 API Key。
 
 浏览器访问：
 
@@ -194,78 +291,99 @@ curl http://127.0.0.1:16023/api/health
 http://服务器公网IP:16023
 ```
 
-电脑宽屏会显示对话目录、对话管理按钮和消息编辑区；手机窄屏先显示对话目录，进入对话后只读查看，并每 5 秒自动读取最新记录。
-
-## 更新项目
+## 后续更新命令
 
 ```bash
 cd /opt/PreciousMemory
 git pull origin main
 npm ci --omit=dev
+
+cp deploy/systemd/preciousmemory.service \
+  /etc/systemd/system/preciousmemory.service
+cp deploy/nginx/preciousmemory.conf \
+  /etc/nginx/sites-available/preciousmemory.conf
+
+systemctl daemon-reload
 systemctl restart preciousmemory
 nginx -t
 systemctl reload nginx
 ```
 
-只有在依赖发生变化时才必须重新执行 `npm ci --omit=dev`，但每次更新都执行也不会有问题。聊天记录位于 `/opt/PreciousMemory/data/precious-memory.sqlite`，不会被代码更新覆盖。
-
-### 从 JSON 版本升级
-
-当前版本不再读取 `data/messages.json`。第一次启动会创建新的空 SQLite 数据库 `data/precious-memory.sqlite`，旧 JSON 聊天记录不会迁移，也不会自动删除。
-
 ## 数据备份
 
-停止服务后复制 SQLite 主文件：
+停止服务后复制 SQLite 文件：
 
 ```bash
 systemctl stop preciousmemory
-cp /opt/PreciousMemory/data/precious-memory.sqlite /opt/PreciousMemory/data/precious-memory.backup.sqlite
+cp /opt/PreciousMemory/data/precious-memory.sqlite \
+  /opt/PreciousMemory/data/precious-memory.backup.sqlite
 systemctl start preciousmemory
 ```
 
-停止服务会让 SQLite 正常合并 WAL 内容。恢复时也请先停止服务，再用备份文件替换 `precious-memory.sqlite`。
-
-## 容量验证
-
-项目提供容量基准脚本，会临时创建 500 个对话、5000 条消息和约 500 万字内容，然后验证对话列表及全文查找：
-
-```bash
-npm run benchmark
-```
-
-测试数据库只创建在系统临时目录中，结束后自动删除，不会影响正式聊天数据。
+恢复时也先停止服务，再替换正式数据库。
 
 ## API
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
 | `GET` | `/api/health` | 健康检查 |
-| `GET` | `/api/config` | 获取固定用户和前端配置 |
+| `GET` | `/api/config` | 获取前端配置和 AI 配置状态，不包含 Key |
 | `GET` | `/api/stats` | 获取对话、消息和字符总数 |
 | `GET` | `/api/search?q=关键词` | 查找对话名称和消息正文 |
-| `GET` | `/api/conversations` | 获取所有对话 |
-| `POST` | `/api/conversations` | 新建对话 |
+| `GET` | `/api/conversations` | 获取全部对话 |
+| `POST` | `/api/conversations` | 新建独立对话 |
 | `PUT` | `/api/conversations/:conversationId` | 重命名对话 |
 | `DELETE` | `/api/conversations/:conversationId` | 删除对话及其消息 |
-| `GET` | `/api/conversations/:conversationId/messages?limit=60` | 获取该对话的最新消息 |
-| `GET` | `/api/conversations/:conversationId/messages?before=序号` | 向前分页 |
-| `GET` | `/api/conversations/:conversationId/messages?around=消息ID` | 定位搜索结果附近的消息 |
-| `POST` | `/api/conversations/:conversationId/messages` | 在对话中新增消息 |
-| `PUT` | `/api/conversations/:conversationId/messages/:messageId` | 修改消息 |
-| `DELETE` | `/api/conversations/:conversationId/messages/:messageId` | 删除消息 |
+| `GET` | `/api/conversations/:conversationId/messages` | 获取该对话消息 |
+| `POST` | `/api/conversations/:conversationId/chat` | 发送用户消息并流式返回 AI 回复 |
 
-新建对话示例：
+新建对话：
 
 ```bash
 curl -X POST http://127.0.0.1:3023/api/conversations \
   -H "Content-Type: application/json" \
-  -d '{"name":"Transformer 学习"}'
+  -d '{"name":"新的对话"}'
 ```
 
-创建成功后，使用返回的对话 ID 新增消息：
+聊天接口使用 SSE 响应：
 
 ```bash
-curl -X POST http://127.0.0.1:3023/api/conversations/对话ID/messages \
+curl -N -X POST \
+  http://127.0.0.1:3023/api/conversations/对话ID/chat \
   -H "Content-Type: application/json" \
-  -d '{"sender":"A","content":"今天学习了 **Transformer** 架构"}'
+  -d '{"content":"你好，请介绍一下你自己"}'
 ```
+
+事件类型：
+
+- `user`：用户消息已经保存
+- `delta`：AI 新生成的一段文字
+- `done`：AI 完整消息已经保存
+- `stopped`：生成被中止
+- `error`：上游 AI 接口返回错误
+
+## 重要安全说明
+
+当前版本仍然没有登录功能。虽然 API Key 不会暴露给浏览器，但任何能访问公网 `16023` 端口的人都可以通过你的服务器调用 AI 接口并产生费用。
+
+正式长期使用前，应至少通过防火墙限制访问来源，或在下一版加入登录和鉴权。不要把这个端口直接分享给其他人。
+
+## 验证
+
+```bash
+npm run check
+npm test
+```
+
+自动化测试覆盖：
+
+- OpenAI Chat Completions 请求格式
+- SSE 流式片段解析
+- AI 回复实时转发与 SQLite 保存
+- 不同对话的上下文隔离
+- API 未配置时拒绝聊天
+- 多对话增删改
+- Markdown 安全过滤
+- 中文搜索
+- 消息分页
+- 不保存时间字段

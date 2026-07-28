@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#f5f2ec" />
-    <title>PreciousMemory · 珍贵回忆</title>
+    <title>PreciousMemory · AI 对话</title>
     <link rel="stylesheet" href="/styles.css" />
     <script src="/app.js" defer></script>
   </head>
@@ -15,16 +15,12 @@
           <div class="brand">
             <div class="brand-mark" aria-hidden="true">P</div>
             <div>
-              <p class="eyebrow">PRIVATE ARCHIVE</p>
+              <p class="eyebrow">PRIVATE AI</p>
               <h1>PreciousMemory</h1>
             </div>
           </div>
 
-          <button
-            class="new-conversation desktop-only"
-            id="new-conversation"
-            type="button"
-          >
+          <button class="new-conversation" id="new-conversation" type="button">
             <span aria-hidden="true">＋</span>
             新建对话
           </button>
@@ -39,8 +35,8 @@
               type="search"
               maxlength="100"
               autocomplete="off"
-              placeholder="查找对话或聊天内容"
-              aria-label="查找对话或聊天内容"
+              placeholder="查找对话或消息"
+              aria-label="查找对话或消息"
             />
             <button
               class="search-clear is-hidden"
@@ -64,20 +60,14 @@
         <div class="conversation-list" id="conversation-list"></div>
 
         <div class="conversation-empty is-hidden" id="conversation-empty">
-          <div aria-hidden="true">♡</div>
+          <div aria-hidden="true">✦</div>
           <h3 id="conversation-empty-title">还没有对话</h3>
-          <p class="desktop-only" id="conversation-empty-desktop">
-            点击“新建对话”开始记录。
-          </p>
-          <p class="mobile-only" id="conversation-empty-mobile">
-            电脑端创建对话后会显示在这里。
-          </p>
+          <p id="conversation-empty-copy">点击“新建对话”开始和 AI 聊天。</p>
         </div>
 
         <footer class="panel-footer">
           <span class="online-dot" aria-hidden="true"></span>
-          <span class="desktop-only">数据保存在这台服务器</span>
-          <span class="mobile-only">选择一个对话查看记录</span>
+          <span>每个对话使用独立上下文</span>
         </footer>
       </aside>
 
@@ -97,7 +87,7 @@
           <div class="chat-person">
             <div class="couple-avatar" aria-hidden="true">
               <span>我</span>
-              <span>TA</span>
+              <span>AI</span>
             </div>
             <div class="chat-title">
               <h2 id="current-conversation-name">请选择一个对话</h2>
@@ -110,7 +100,7 @@
 
           <div class="header-actions">
             <button
-              class="header-button desktop-only"
+              class="header-button"
               id="rename-conversation"
               type="button"
               disabled
@@ -118,12 +108,12 @@
               重命名
             </button>
             <button
-              class="header-button danger desktop-only"
+              class="header-button danger"
               id="delete-conversation"
               type="button"
               disabled
             >
-              删除对话
+              删除
             </button>
             <button
               class="icon-button"
@@ -140,63 +130,37 @@
 
         <div class="no-selection" id="no-selection">
           <div class="no-selection-icon" aria-hidden="true">P</div>
-          <h2>选择一段珍贵回忆</h2>
-          <p class="desktop-only">从左侧选择对话，或者创建一个新的对话。</p>
-          <p class="mobile-only">返回目录选择想查看的对话。</p>
+          <h2>开始一段新的 AI 对话</h2>
+          <p>选择已有对话，或者新建一个完全独立的上下文。</p>
         </div>
 
         <div class="chat-scroll is-hidden" id="chat-scroll">
           <div class="history-loader">
             <button class="history-button is-hidden" id="load-older" type="button">
-              加载更早的记录
+              加载更早的消息
             </button>
           </div>
 
           <div class="message-empty is-hidden" id="message-empty">
-            <div aria-hidden="true">♡</div>
-            <h3>这个对话还没有消息</h3>
-            <p class="desktop-only">在下方写下第一条记录吧。</p>
-            <p class="mobile-only">电脑端添加后会自动出现在这里。</p>
+            <div aria-hidden="true">✦</div>
+            <h3>这是一个新的上下文</h3>
+            <p>发送第一条消息，AI 不会看到其他对话的内容。</p>
           </div>
 
           <div class="message-list" id="message-list" aria-live="polite"></div>
 
           <button class="jump-latest is-hidden" id="jump-latest" type="button">
-            查看最新消息
+            返回最新消息
           </button>
         </div>
 
-        <section class="composer desktop-only is-disabled" id="composer">
+        <section class="composer is-disabled" id="composer">
           <div class="composer-topline">
-            <div class="sender-switch" role="radiogroup" aria-label="选择发送者">
-              <button
-                class="sender-option is-active"
-                type="button"
-                data-sender="A"
-                role="radio"
-                aria-checked="true"
-              >
-                <span class="sender-avatar sender-avatar-a">我</span>
-                用户 A
-              </button>
-              <button
-                class="sender-option"
-                type="button"
-                data-sender="B"
-                role="radio"
-                aria-checked="false"
-              >
-                <span class="sender-avatar sender-avatar-b">TA</span>
-                用户 B
-              </button>
+            <div class="ai-model">
+              <span class="ai-pulse" aria-hidden="true"></span>
+              <span id="ai-model-label">正在读取 AI 配置…</span>
             </div>
-
-            <div class="composer-mode">
-              <span id="composer-mode-label">记录新消息</span>
-              <button class="text-button is-hidden" id="cancel-edit" type="button">
-                取消修改
-              </button>
-            </div>
+            <span id="composer-mode-label">Markdown 已启用</span>
           </div>
 
           <div class="composer-input-row">
@@ -204,28 +168,28 @@
               <textarea
                 id="message-input"
                 maxlength="20000"
-                rows="4"
+                rows="3"
                 disabled
-                placeholder="输入聊天内容，支持 Markdown……"
+                placeholder="给 AI 发送消息……"
               ></textarea>
               <div class="composer-meta">
-                <span>Ctrl + Enter 发送</span>
+                <span>Enter 发送 · Shift + Enter 换行</span>
                 <span id="character-count">0 / 20000</span>
               </div>
             </div>
 
-            <button class="send-button" id="submit-message" type="button" disabled>
-              保存消息
-            </button>
+            <div class="composer-buttons">
+              <button class="send-button" id="submit-message" type="button" disabled>
+                发送
+              </button>
+              <button class="stop-button is-hidden" id="stop-generation" type="button">
+                停止生成
+              </button>
+            </div>
           </div>
 
           <p class="form-status" id="form-status" role="status" aria-live="polite"></p>
         </section>
-
-        <footer class="mobile-footer mobile-only">
-          <span class="online-dot" aria-hidden="true"></span>
-          手机只读模式 · 每 5 秒自动更新
-        </footer>
       </main>
     </div>
 
@@ -234,7 +198,9 @@
         <div class="dialog-mark" aria-hidden="true">P</div>
         <p class="eyebrow" id="dialog-eyebrow">NEW CONVERSATION</p>
         <h2 id="dialog-title">新建对话</h2>
-        <p id="dialog-description">给这段聊天记录起一个容易辨认的名字。</p>
+        <p id="dialog-description">
+          新对话不会携带其他对话的历史，每个对话都是独立上下文。
+        </p>
 
         <label for="conversation-name">对话名称</label>
         <input
@@ -243,7 +209,7 @@
           type="text"
           maxlength="80"
           autocomplete="off"
-          placeholder="例如：学习记录"
+          placeholder="例如：日常聊天"
           required
         />
 
