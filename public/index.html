@@ -72,10 +72,6 @@
           <p id="conversation-empty-copy">点击“新建对话”开始和 AI 聊天。</p>
         </div>
 
-        <footer class="panel-footer">
-          <span class="online-dot" aria-hidden="true"></span>
-          <span>每个对话使用独立上下文</span>
-        </footer>
       </aside>
 
       <main class="chat-panel">
@@ -162,40 +158,43 @@
         </div>
 
         <section class="composer is-disabled" id="composer">
-          <div class="composer-topline">
-            <div class="ai-model">
-              <span class="ai-pulse" aria-hidden="true"></span>
-              <span id="ai-model-label">正在读取 AI 配置…</span>
-            </div>
-            <span id="composer-mode-label">Markdown 已启用</span>
-          </div>
-
           <div class="composer-input-row">
             <div class="textarea-wrap">
               <textarea
                 id="message-input"
                 maxlength="20000"
-                rows="3"
+                rows="1"
                 disabled
                 placeholder="给 AI 发送消息……"
               ></textarea>
-              <div class="composer-meta">
-                <span>Enter 发送 · Shift + Enter 换行</span>
-                <span id="character-count">0 / 20000</span>
-              </div>
             </div>
 
             <div class="composer-buttons">
-              <button class="send-button" id="submit-message" type="button" disabled>
-                发送
+              <button
+                class="send-button"
+                id="submit-message"
+                type="button"
+                aria-label="发送消息"
+                title="发送消息"
+                disabled
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 19V5M6.5 10.5 12 5l5.5 5.5" />
+                </svg>
               </button>
-              <button class="stop-button is-hidden" id="stop-generation" type="button">
-                停止生成
+              <button
+                class="stop-button is-hidden"
+                id="stop-generation"
+                type="button"
+                aria-label="停止生成"
+                title="停止生成"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="7" y="7" width="10" height="10" rx="1.5" />
+                </svg>
               </button>
             </div>
           </div>
-
-          <p class="form-status" id="form-status" role="status" aria-live="polite"></p>
         </section>
       </main>
     </div>
